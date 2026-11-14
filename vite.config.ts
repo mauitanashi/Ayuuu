@@ -2,6 +2,8 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import path from 'path'
 
+const CLIENT_UA = 'Auris/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290da-25f99f56)';
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
@@ -17,7 +19,7 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-manga/, ''),
         headers: {
-          'User-Agent': 'Auris/1.0 (Android; Mobile)',
+          'User-Agent': CLIENT_UA,
         },
       },
       '/api-covers': {
@@ -25,7 +27,7 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-covers/, ''),
         headers: {
-          'User-Agent': 'Auris/1.0 (Android; Mobile)',
+          'User-Agent': CLIENT_UA,
         },
       },
     },

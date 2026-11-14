@@ -18,19 +18,26 @@ export interface ChapterItem {
 
 const isNative = Capacitor.isNativePlatform();
 
-// In web development, route through Vite proxy to attach app headers; on native, call directly
+// Authenticated client user agent
+const CLIENT_UA = 'Auris/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290da-25f99f56)';
+
+// In web development, route through Vite proxy; on native, call directly
 const API_BASE = isNative ? 'https://api.mangadex.org' : '/api-manga';
 const COVERS_BASE = isNative ? 'https://uploads.mangadex.org' : '/api-covers';
 
-async function fetchJson(endpoint: string, params: Record<string, string> = {}): Promise<any> {
-  const query = new URLSearchParams(params).toString();
-  const url = `${API_BASE}${endpoint}${query ? '?' + query : ''}`;
+type QueryParam = [string, string];
+
+async function fetchJson(endpoint: string, params: QueryParam[] = []): Promise<any> {
+  const queryString = params
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&');
+  const url = `${API_BASE}${endpoint}${queryString ? '?' + queryString : ''}`;
 
   if (isNative) {
     const res = await CapacitorHttp.get({
       url,
       headers: {
-        'User-Agent': 'Auris/1.0 (Android; Mobile)',
+        'User-Agent': CLIENT_UA,
         'Accept': 'application/json',
       },
     });
@@ -53,42 +60,53 @@ async function fetchJson(endpoint: string, params: Record<string, string> = {}):
 
 export const MangaService = {
   async getPopularManga(limit = 24, offset = 0): Promise<MangaItem[]> {
-    const data = await fetchJson('/manga', {
-      limit: String(limit),
-      offset: String(offset),
-      'includes[]': 'cover_art',
-      'availableTranslatedLanguage[]': 'en',
-      hasAvailableChapters: 'true',
-      'contentRating[]': 'safe',
-      'order[followedCount]': 'desc',
-    });
+    const params: QueryParam[] = [
+      ['limit', String(limit)],
+      ['offset', String(offset)],
+      ['includes[]', 'cover_art'],
+      ['includes[]', 'author'],
+      ['hasAvailableChapters', 'true'],
+      ['contentRating[]', 'safe'],
+      ['contentRating[]', 'suggestive'],
+      ['contentRating[]', 'erotica'],
+      ['order[followedCount]', 'desc'],
+    ];
 
+    const data = await fetchJson('/manga', params);
     return this.parseList(data.data || []);
   },
 
   async searchManga(query: string, limit = 20): Promise<MangaItem[]> {
-    const data = await fetchJson('/manga', {
-      limit: String(limit),
-      title: query.trim(),
-      'includes[]': 'cover_art',
-      'availableTranslatedLanguage[]': 'en',
-      hasAvailableChapters: 'true',
-      'contentRating[]': 'safe',
-      'order[relevance]': 'desc',
-    });
+    const params: QueryParam[] = [
+      ['limit', String(limit)],
+      ['title', query.trim()],
+      ['includes[]', 'cover_art'],
+      ['includes[]', 'author'],
+      ['hasAvailableChapters', 'true'],
+      ['contentRating[]', 'safe'],
+      ['contentRating[]', 'suggestive'],
+      ['contentRating[]', 'erotica'],
+      ['order[relevance]', 'desc'],
+    ];
 
+    const data = await fetchJson('/manga', params);
     return this.parseList(data.data || []);
   },
 
   async getChapters(mangaId: string, limit = 100): Promise<ChapterItem[]> {
-    const data = await fetchJson(`/manga/${mangaId}/feed`, {
-      'translatedLanguage[]': 'en',
-      includeExternalUrl: '0',
-      includeEmptyPages: '0',
-      includeFuturePublishAt: '0',
-      'order[chapter]': 'asc',
-      limit: String(limit),
-    });
+    const params: QueryParam[] = [
+      ['translatedLanguage[]', 'en'],
+      ['includeExternalUrl', '0'],
+      ['includeEmptyPages', '0'],
+      ['includeFuturePublishAt', '0'],
+      ['contentRating[]', 'safe'],
+      ['contentRating[]', 'suggestive'],
+      ['contentRating[]', 'erotica'],
+      ['order[chapter]', 'asc'],
+      ['limit', String(limit)],
+    ];
+
+    const data = await fetchJson(`/manga/${mangaId}/feed`, params);
 
     return (data.data || []).map((ch: any) => {
       const attr = ch.attributes || {};
