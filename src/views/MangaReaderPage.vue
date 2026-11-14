@@ -101,7 +101,7 @@ import { documentOutline, albumsOutline } from 'ionicons/icons';
 import { MangaService } from '../services/mangaService';
 
 const route = useRoute();
-const chapterId = ref(route.params.chapterId as string);
+const chapterId = ref(decodeURIComponent(route.params.chapterId as string));
 
 const showOverlay = ref(true);
 const isLongStrip = ref(true);

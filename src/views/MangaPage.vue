@@ -175,7 +175,7 @@ const openManga = async (manga: MangaItem) => {
   isLoadingChapters.value = true;
   chapters.value = [];
   try {
-    chapters.value = await MangaService.getChapters(manga.id);
+    chapters.value = await MangaService.getChapters(manga.id, manga.title);
   } catch (err) {
     console.error('Failed to fetch chapters:', err);
   } finally {
@@ -187,7 +187,7 @@ const readChapter = (ch: ChapterItem) => {
   if (!selectedManga.value) return;
   const mangaId = selectedManga.value.id;
   selectedManga.value = null;
-  router.push(`/manga/${mangaId}/chapter/${ch.id}`);
+  router.push(`/manga/${mangaId}/chapter/${encodeURIComponent(ch.id)}`);
 };
 
 onMounted(() => {

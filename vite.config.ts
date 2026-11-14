@@ -30,6 +30,15 @@ export default defineConfig({
           'User-Agent': CLIENT_UA,
         },
       },
+      '/api-alt': {
+        target: 'https://mangapill.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-alt/, ''),
+        headers: {
+          'Referer': 'https://mangapill.com/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      },
     },
   },
 })

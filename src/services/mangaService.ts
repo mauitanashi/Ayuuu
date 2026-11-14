@@ -24,6 +24,7 @@ const CLIENT_UA = 'Auris/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290
 // In web development, route through Vite proxy; on native, call directly
 const API_BASE = isNative ? 'https://api.mangadex.org' : '/api-manga';
 const COVERS_BASE = isNative ? 'https://uploads.mangadex.org' : '/api-covers';
+const ALT_BASE = isNative ? 'https://mangapill.com' : '/api-alt';
 
 type QueryParam = [string, string];
 
@@ -55,6 +56,27 @@ async function fetchJson(endpoint: string, params: QueryParam[] = []): Promise<a
       throw new Error(`Request failed (${res.status})`);
     }
     return await res.json();
+  }
+}
+
+async function fetchAltHtml(path: string): Promise<string> {
+  const url = `${ALT_BASE}${path}`;
+  if (isNative) {
+    const res = await CapacitorHttp.get({
+      url,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://mangapill.com/',
+      },
+    });
+    return String(res.data || '');
+  } else {
+    const res = await fetch(url, {
+      headers: {
+        'Referer': 'https://mangapill.com/',
+      },
+    });
+    return await res.text();
   }
 }
 
@@ -93,7 +115,8 @@ export const MangaService = {
     return this.parseList(data.data || []);
   },
 
-  async getChapters(mangaId: string, limit = 100): Promise<ChapterItem[]> {
+  async getChapters(mangaId: string, mangaTitle?: string, limit = 100): Promise<ChapterItem[]> {
+    // 1. Try standard hosted chapters
     const params: QueryParam[] = [
       ['translatedLanguage[]', 'en'],
       ['includeExternalUrl', '0'],
@@ -107,8 +130,7 @@ export const MangaService = {
     ];
 
     const data = await fetchJson(`/manga/${mangaId}/feed`, params);
-
-    return (data.data || []).map((ch: any) => {
+    let chapters = (data.data || []).map((ch: any) => {
       const attr = ch.attributes || {};
       const chNum = attr.chapter ? `Ch. ${attr.chapter}` : 'Special';
       const title = attr.title ? `${chNum}: ${attr.title}` : chNum;
@@ -119,9 +141,61 @@ export const MangaService = {
         publishAt: attr.publishAt || '',
       };
     });
+
+    // 2. If fewer than 2 chapters found (e.g. One Piece, Jujutsu Kaisen with publisher external redirects),
+    // automatically fallback to full chapter resolver
+    if (chapters.length < 2 && mangaTitle) {
+      const altChapters = await this.getAltChapters(mangaTitle);
+      if (altChapters.length > 0) {
+        return altChapters;
+      }
+    }
+
+    return chapters;
+  },
+
+  async getAltChapters(title: string): Promise<ChapterItem[]> {
+    try {
+      const searchHtml = await fetchAltHtml(`/search?q=${encodeURIComponent(title)}`);
+      const linkMatch = searchHtml.match(/\/manga\/([0-9]+\/[a-z0-9-]+)/);
+      if (!linkMatch) return [];
+
+      const mangaPath = `/manga/${linkMatch[1]}`;
+      const detailHtml = await fetchAltHtml(mangaPath);
+      const matches = [...detailHtml.matchAll(/href="(\/chapters\/[0-9]+-[0-9]+\/[^"]+)"[^>]*>([^<]+)<\/a>/g)];
+
+      return matches.reverse().map((m, index) => {
+        const link = m[1];
+        const rawTitle = m[2].trim();
+        const chNumMatch = rawTitle.match(/Chapter\s+([0-9.]+)/i);
+        const chapter = chNumMatch ? chNumMatch[1] : String(index + 1);
+
+        return {
+          id: `alt:${link}`,
+          chapter,
+          title: rawTitle,
+          publishAt: '',
+        };
+      });
+    } catch (e) {
+      console.warn('Fallback chapter retrieval error:', e);
+      return [];
+    }
   },
 
   async getChapterPages(chapterId: string): Promise<string[]> {
+    if (chapterId.startsWith('alt:')) {
+      const path = chapterId.substring(4);
+      const html = await fetchAltHtml(path);
+      const pages = html
+        .split('data-src="')
+        .slice(1)
+        .map((s) => s.split('"')[0])
+        .filter((u) => u.startsWith('http'));
+
+      return pages;
+    }
+
     const data = await fetchJson(`/at-home/server/${chapterId}`);
     const baseUrl = data.baseUrl;
     const hash = data.chapter?.hash;
