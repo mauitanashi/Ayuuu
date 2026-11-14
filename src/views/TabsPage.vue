@@ -1,5 +1,5 @@
 <template>
-  <ion-page>
+  <ion-page class="tabs-container-page">
     <ion-tabs>
       <ion-router-outlet></ion-router-outlet>
       <ion-tab-bar slot="bottom" class="custom-tab-bar">
@@ -42,12 +42,25 @@ import { musicalNotes, tvOutline, bookOutline, bookmarkOutline } from 'ionicons/
 
 <style scoped>
 .custom-tab-bar {
-  --background: #0d0d10;
-  border-top: 1px solid #1c1c21;
+  --background: #1c1c1e;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 0 12px 10px 12px;
+  border-radius: 16px;
+  height: 64px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  contain: content;
 }
 
 ion-tab-button {
-  --color: #888892;
-  --color-selected: #f43f5e;
+  --color: #a1a1a6;
+  --color-selected: #f0f0f2;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+  transition: all 0.2s ease-in-out;
+}
+
+ion-tab-button.tab-selected ion-icon {
+  transform: scale(1.08);
 }
 </style>

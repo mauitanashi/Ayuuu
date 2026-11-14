@@ -1,7 +1,10 @@
 <template>
   <ion-page>
     <ion-header :translucent="true">
-      <ion-toolbar>
+      <ion-toolbar class="brand-toolbar">
+        <ion-buttons slot="start">
+          <img src="/logo.png" alt="Ayuuu" class="header-logo" />
+        </ion-buttons>
         <ion-title>Music</ion-title>
       </ion-toolbar>
       <ion-toolbar>
@@ -23,7 +26,7 @@
         <h2 class="section-title">
           {{ isSearching ? "Search Results" : "Featured Tracks" }}
         </h2>
-        <ion-list lines="full" class="track-list">
+        <ion-list lines="none" class="track-list">
           <ion-item
             v-for="track in tracks"
             :key="track.videoId"
@@ -33,7 +36,7 @@
           >
             <ion-thumbnail slot="start" class="track-thumb">
               <img
-                :src="track.artworkUrl || 'https://via.placeholder.com/64'"
+                :src="track.artworkUrl || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=200&q=80'"
                 alt="cover"
                 loading="lazy"
               />
@@ -49,21 +52,22 @@
                   ? pauseOutline
                   : playOutline
               "
-              color="primary"
+              class="playback-icon"
+              :class="{ 'is-active': activeTrack?.videoId === track.videoId }"
             ></ion-icon>
           </ion-item>
         </ion-list>
       </div>
     </ion-content>
 
-    <!-- Mini Player Footer -->
+    <!-- Mini Player Footer (Floating above dock per DESIGN.md) -->
     <div v-if="activeTrack" class="mini-player">
       <img :src="activeTrack.artworkUrl" class="mini-thumb" />
       <div class="mini-info">
         <div class="mini-title">{{ activeTrack.title }}</div>
         <div class="mini-artist">{{ activeTrack.artist }}</div>
       </div>
-      <ion-button fill="clear" @click="togglePlayPause">
+      <ion-button fill="clear" @click="togglePlayPause" class="mini-play-btn">
         <ion-icon
           :icon="isPlaying ? pauseOutline : playOutline"
           slot="icon-only"
@@ -89,6 +93,7 @@ import {
   IonIcon,
   IonSpinner,
   IonButton,
+  IonButtons,
 } from "@ionic/vue";
 import { playOutline, pauseOutline } from "ionicons/icons";
 import { NewPipeExtractor, MediaSession, TrackItem } from "../plugins";
@@ -98,16 +103,17 @@ const searchQuery = ref("");
 const isSearching = ref(false);
 const isLoading = ref(true);
 const isPlaying = ref(false);
+
 const activeTrack = ref<TrackItem | null>(null);
 const tracks = ref<TrackItem[]>([]);
 
-const loadTrending = async () => {
+const loadFeatured = async () => {
   isLoading.value = true;
   isSearching.value = false;
   try {
     tracks.value = await MusicService.getTrendingMusic();
-  } catch (err) {
-    console.error("Failed to load trending music:", err);
+  } catch (e) {
+    console.error("Failed to load featured tracks:", e);
   } finally {
     isLoading.value = false;
   }
@@ -115,15 +121,15 @@ const loadTrending = async () => {
 
 const handleSearch = async () => {
   if (!searchQuery.value.trim()) {
-    loadTrending();
+    loadFeatured();
     return;
   }
   isLoading.value = true;
   isSearching.value = true;
   try {
     tracks.value = await MusicService.searchMusic(searchQuery.value);
-  } catch (err) {
-    console.error("Failed to search music:", err);
+  } catch (e) {
+    console.error("Music search failed:", e);
   } finally {
     isLoading.value = false;
   }
@@ -131,103 +137,99 @@ const handleSearch = async () => {
 
 const playTrack = async (track: TrackItem) => {
   activeTrack.value = track;
-  isLoading.value = true;
+  isPlaying.value = true;
+
   try {
     let streamUrl = track.streamUrl;
-
-    // Try resolving with NewPipeExtractor native plugin
-    try {
+    if (!streamUrl) {
       const resolved = await NewPipeExtractor.resolveAudio({
         videoId: track.videoId,
       });
-      if (resolved && resolved.streamUrl) {
-        streamUrl = resolved.streamUrl;
-      }
-    } catch (e) {
-      console.warn("Native NewPipe extractor fallback/preview stream used:", e);
+      streamUrl = resolved?.streamUrl;
     }
 
-    // Play through native MediaSession foreground service (or HTML5 audio fallback)
-    try {
-      await MediaSession.playTrack({
-        track: {
-          ...track,
-          streamUrl: streamUrl || "",
-        },
-      });
-    } catch (e) {
-      // Web browser preview audio fallback
-      if (streamUrl) {
-        const audio = new Audio(streamUrl);
-        audio.play();
-      }
+    if (!streamUrl) {
+      console.error("No valid audio stream resolved for:", track.title);
+      return;
     }
 
-    isPlaying.value = true;
+    await MediaSession.playTrack({
+      track: {
+        ...track,
+        streamUrl,
+      },
+    });
   } catch (err) {
-    console.error("Failed to play track:", err);
-  } finally {
-    isLoading.value = false;
+    console.error("Playback resolution failed:", err);
+    isPlaying.value = false;
   }
 };
 
 const togglePlayPause = async () => {
   if (isPlaying.value) {
-    try {
-      await MediaSession.pause();
-    } catch (e) {}
+    await MediaSession.pause();
     isPlaying.value = false;
   } else {
-    try {
-      await MediaSession.resume();
-    } catch (e) {}
+    await MediaSession.resume();
     isPlaying.value = true;
   }
 };
 
 onMounted(() => {
-  loadTrending();
-  try {
-    MediaSession.addListener("playbackStateChange", (state) => {
-      isPlaying.value = state.isPlaying;
-      if (state.currentTrack) {
-        activeTrack.value = state.currentTrack;
-      }
-    });
-  } catch (e) {
-    // Web fallback
-  }
+  loadFeatured();
+
+  MediaSession.addListener("playbackStateChange", (state: any) => {
+    isPlaying.value = state.isPlaying;
+  });
 });
 </script>
 
 <style scoped>
+.brand-toolbar {
+  --background: #000000;
+}
+
+.header-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  margin-left: 12px;
+  object-fit: cover;
+}
+
 .section-title {
-  font-size: 1.25rem;
+  font-size: 1.5rem;
   font-weight: 700;
-  margin: 16px 0 12px;
+  letter-spacing: -0.4px;
+  color: #f5f5f7;
+  margin: 20px 0 14px;
 }
 
 .track-list {
   background: transparent;
+  padding: 0;
 }
 
 .track-item {
-  --background: #111114;
-  --border-color: #1a1a20;
-  margin-bottom: 6px;
-  border-radius: 8px;
+  --background: #1c1c1e;
+  --border-color: rgba(255, 255, 255, 0.05);
+  margin-bottom: 8px;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .track-thumb {
-  --border-radius: 6px;
-  width: 52px;
-  height: 52px;
+  --border-radius: 8px;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .track-title {
   font-size: 0.95rem;
   font-weight: 600;
-  color: #f4f4f5;
+  color: #f5f5f7;
   margin: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -236,31 +238,42 @@ onMounted(() => {
 
 .track-artist {
   font-size: 0.8rem;
-  color: #a1a1aa;
+  color: #a1a1a6;
   margin-top: 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.playback-icon {
+  color: #a1a1a6;
+  font-size: 20px;
+}
+
+.playback-icon.is-active {
+  color: #bccbbb; /* DESIGN.md active-playback muted sage */
+}
+
 .mini-player {
   position: fixed;
-  bottom: 56px;
-  left: 0;
-  right: 0;
+  bottom: 84px;
+  left: 16px;
+  right: 16px;
   height: 60px;
-  background: #18181c;
-  border-top: 1px solid #27272a;
+  background: #1c1c1e;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  z-index: 100;
+  padding: 0 14px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  z-index: 99;
 }
 
 .mini-thumb {
-  width: 44px;
-  height: 44px;
-  border-radius: 6px;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
   object-fit: cover;
   margin-right: 12px;
 }
@@ -273,6 +286,7 @@ onMounted(() => {
 .mini-title {
   font-size: 0.9rem;
   font-weight: 600;
+  color: #f5f5f7;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -280,6 +294,13 @@ onMounted(() => {
 
 .mini-artist {
   font-size: 0.75rem;
-  color: #a1a1aa;
+  color: #a1a1a6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mini-play-btn {
+  --color: #f0f0f2;
 }
 </style>

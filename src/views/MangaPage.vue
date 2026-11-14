@@ -1,7 +1,10 @@
 <template>
   <ion-page>
     <ion-header :translucent="true">
-      <ion-toolbar>
+      <ion-toolbar class="brand-toolbar">
+        <ion-buttons slot="start">
+          <img src="/logo.png" alt="Ayuuu" class="header-logo" />
+        </ion-buttons>
         <ion-title>Manga</ion-title>
       </ion-toolbar>
       <ion-toolbar>
@@ -419,10 +422,24 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.brand-toolbar {
+  --background: #000000;
+}
+
+.header-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  margin-left: 12px;
+  object-fit: cover;
+}
+
 .section-title {
-  font-size: 1.25rem;
+  font-size: 1.5rem;
   font-weight: 700;
-  margin-bottom: 12px;
+  letter-spacing: -0.4px;
+  color: #f5f5f7;
+  margin-bottom: 14px;
 }
 
 .center-spinner {
@@ -446,11 +463,13 @@ onMounted(() => {
 }
 
 .manga-card {
-  --background: #18181c;
+  --background: #1c1c1e;
   margin: 0;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  transition: transform 0.15s ease-in-out;
 }
 
 .manga-cover {
@@ -458,19 +477,19 @@ onMounted(() => {
   aspect-ratio: 3 / 4;
   object-fit: cover;
   display: block;
-  background-color: #121215;
+  background-color: #141416;
 }
 
 .card-title {
   font-size: 0.95rem;
   font-weight: 600;
-  color: #f4f4f5;
+  color: #f5f5f7;
   margin-top: 4px;
 }
 
 .manga-desc {
   font-size: 0.9rem;
-  color: #a1a1aa;
+  color: #a1a1a6;
   margin-bottom: 16px;
   line-height: 1.4;
   max-height: 120px;
@@ -486,7 +505,7 @@ onMounted(() => {
 }
 
 .chapter-searchbar {
-  --background: #1e1e24;
+  --background: #2c2c2e;
   padding: 0;
   flex: 1;
 }
@@ -515,7 +534,7 @@ onMounted(() => {
 .page-number-text {
   font-size: 0.9rem;
   font-weight: 600;
-  color: #f4f4f5;
+  color: #f5f5f7;
   text-align: center;
 }
 
@@ -523,7 +542,7 @@ onMounted(() => {
   display: block;
   font-size: 0.75rem;
   font-weight: 400;
-  color: #a1a1aa;
+  color: #a1a1a6;
 }
 
 .quick-jump-actions {
@@ -533,7 +552,7 @@ onMounted(() => {
 
 .no-chapters-msg {
   text-align: center;
-  color: #a1a1aa;
+  color: #a1a1a6;
   font-size: 0.9rem;
 }
 </style>
