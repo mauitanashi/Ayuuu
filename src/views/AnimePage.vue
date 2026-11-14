@@ -7,7 +7,7 @@
       <ion-toolbar>
         <ion-searchbar
           v-model="searchQuery"
-          placeholder="Search Kitsu Anime..."
+          placeholder="Search anime by title..."
           @keyup.enter="handleSearch"
           :debounce="500"
         ></ion-searchbar>

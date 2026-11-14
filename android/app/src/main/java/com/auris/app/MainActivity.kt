@@ -12,5 +12,8 @@ class MainActivity : BridgeActivity() {
         registerPlugin(MediaSessionPlugin::class.java)
         registerPlugin(VideoPlayerPlugin::class.java)
         super.onCreate(savedInstanceState)
+
+        // Set non-browser User-Agent so media sources do not block with 403
+        bridge?.webView?.settings?.userAgentString = "Auris/1.0 (Android; Mobile)"
     }
 }

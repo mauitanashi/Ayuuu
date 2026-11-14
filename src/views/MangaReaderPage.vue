@@ -6,7 +6,7 @@
         <ion-buttons slot="start">
           <ion-back-button default-href="/tabs/manga"></ion-back-button>
         </ion-buttons>
-        <ion-title>Manga Reader</ion-title>
+        <ion-title>Reader</ion-title>
         <ion-buttons slot="end">
           <ion-button @click="toggleReadingMode">
             <ion-icon :icon="isLongStrip ? documentOutline : albumsOutline" slot="icon-only"></ion-icon>
@@ -20,7 +20,7 @@
       <!-- Loading state -->
       <div v-if="isLoading" class="center-content">
         <ion-spinner name="crescent" color="primary"></ion-spinner>
-        <p class="loading-text">Resolving chapter pages from MangaDex...</p>
+        <p class="loading-text">Loading chapter pages...</p>
       </div>
 
       <!-- Error state -->
@@ -42,7 +42,6 @@
             :alt="'Page ' + (index + 1)"
             class="manga-page-img"
             loading="lazy"
-            @load="onPageLoaded(index)"
           />
         </div>
       </div>
@@ -121,8 +120,8 @@ const loadPages = async () => {
       error.value = 'No pages available for this chapter.';
     }
   } catch (err: any) {
-    console.error('Failed to resolve chapter pages:', err);
-    error.value = err?.message || 'Failed to load chapter images.';
+    console.error('Failed to load chapter pages:', err);
+    error.value = 'Failed to load chapter images. Please try again.';
   } finally {
     isLoading.value = false;
   }
@@ -134,10 +133,6 @@ const toggleOverlay = () => {
 
 const toggleReadingMode = () => {
   isLongStrip.value = !isLongStrip.value;
-};
-
-const onPageLoaded = (index: number) => {
-  // Page load tracking
 };
 
 const nextPage = () => {

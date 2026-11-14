@@ -20,7 +20,9 @@
       </div>
 
       <div v-else class="ion-padding-horizontal">
-        <h2 class="section-title">{{ isSearching ? 'Search Results' : 'Featured Tracks' }}</h2>
+        <h2 class="section-title">
+          {{ isSearching ? "Search Results" : "Featured Tracks" }}
+        </h2>
         <ion-list lines="full" class="track-list">
           <ion-item
             v-for="track in tracks"
@@ -30,7 +32,11 @@
             class="track-item"
           >
             <ion-thumbnail slot="start" class="track-thumb">
-              <img :src="track.artworkUrl || 'https://via.placeholder.com/64'" alt="cover" loading="lazy" />
+              <img
+                :src="track.artworkUrl || 'https://via.placeholder.com/64'"
+                alt="cover"
+                loading="lazy"
+              />
             </ion-thumbnail>
             <ion-label>
               <h3 class="track-title">{{ track.title }}</h3>
@@ -38,7 +44,11 @@
             </ion-label>
             <ion-icon
               slot="end"
-              :icon="activeTrack?.videoId === track.videoId && isPlaying ? pauseOutline : playOutline"
+              :icon="
+                activeTrack?.videoId === track.videoId && isPlaying
+                  ? pauseOutline
+                  : playOutline
+              "
               color="primary"
             ></ion-icon>
           </ion-item>
@@ -54,14 +64,17 @@
         <div class="mini-artist">{{ activeTrack.artist }}</div>
       </div>
       <ion-button fill="clear" @click="togglePlayPause">
-        <ion-icon :icon="isPlaying ? pauseOutline : playOutline" slot="icon-only"></ion-icon>
+        <ion-icon
+          :icon="isPlaying ? pauseOutline : playOutline"
+          slot="icon-only"
+        ></ion-icon>
       </ion-button>
     </div>
   </ion-page>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted } from "vue";
 import {
   IonPage,
   IonHeader,
@@ -76,12 +89,12 @@ import {
   IonIcon,
   IonSpinner,
   IonButton,
-} from '@ionic/vue';
-import { playOutline, pauseOutline } from 'ionicons/icons';
-import { NewPipeExtractor, MediaSession, TrackItem } from '../plugins';
-import { MusicService } from '../services/musicService';
+} from "@ionic/vue";
+import { playOutline, pauseOutline } from "ionicons/icons";
+import { NewPipeExtractor, MediaSession, TrackItem } from "../plugins";
+import { MusicService } from "../services/musicService";
 
-const searchQuery = ref('');
+const searchQuery = ref("");
 const isSearching = ref(false);
 const isLoading = ref(true);
 const isPlaying = ref(false);
@@ -94,7 +107,7 @@ const loadTrending = async () => {
   try {
     tracks.value = await MusicService.getTrendingMusic();
   } catch (err) {
-    console.error('Failed to load trending music:', err);
+    console.error("Failed to load trending music:", err);
   } finally {
     isLoading.value = false;
   }
@@ -110,7 +123,7 @@ const handleSearch = async () => {
   try {
     tracks.value = await MusicService.searchMusic(searchQuery.value);
   } catch (err) {
-    console.error('Failed to search music:', err);
+    console.error("Failed to search music:", err);
   } finally {
     isLoading.value = false;
   }
@@ -124,12 +137,14 @@ const playTrack = async (track: TrackItem) => {
 
     // Try resolving with NewPipeExtractor native plugin
     try {
-      const resolved = await NewPipeExtractor.resolveAudio({ videoId: track.videoId });
+      const resolved = await NewPipeExtractor.resolveAudio({
+        videoId: track.videoId,
+      });
       if (resolved && resolved.streamUrl) {
         streamUrl = resolved.streamUrl;
       }
     } catch (e) {
-      console.warn('Native NewPipe extractor fallback/preview stream used:', e);
+      console.warn("Native NewPipe extractor fallback/preview stream used:", e);
     }
 
     // Play through native MediaSession foreground service (or HTML5 audio fallback)
@@ -137,7 +152,7 @@ const playTrack = async (track: TrackItem) => {
       await MediaSession.playTrack({
         track: {
           ...track,
-          streamUrl: streamUrl || '',
+          streamUrl: streamUrl || "",
         },
       });
     } catch (e) {
@@ -150,7 +165,7 @@ const playTrack = async (track: TrackItem) => {
 
     isPlaying.value = true;
   } catch (err) {
-    console.error('Failed to play track:', err);
+    console.error("Failed to play track:", err);
   } finally {
     isLoading.value = false;
   }
@@ -173,7 +188,7 @@ const togglePlayPause = async () => {
 onMounted(() => {
   loadTrending();
   try {
-    MediaSession.addListener('playbackStateChange', (state) => {
+    MediaSession.addListener("playbackStateChange", (state) => {
       isPlaying.value = state.isPlaying;
       if (state.currentTrack) {
         activeTrack.value = state.currentTrack;
