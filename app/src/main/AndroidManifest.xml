@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The player's volume slider drives the system media stream, so it matches the hardware
+         keys. Normal permission: granted at install, no prompt. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <application
+        android:name=".AurisApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Auris">
+
+        <activity
+            android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:theme="@style/Theme.Auris">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Lets the diagnostics screen hand a log bundle to the share sheet.
+
+          A FileProvider URI rather than a `file://` one: since Android 7 a raw path throws
+          FileUriExposedException, and passing one would be a sandbox escape besides. `grantUri`
+          is not set, so the provider is not discoverable by other apps — they can only read the
+          file if the user picks a share target and the grant is handed over.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!--
+          Background audio.
+
+          The service owns the ExoPlayer so playback survives the Activity. Its notification is a
+          foreground-service notification, which is why `foregroundServiceType="mediaPlayback"`
+          and the matching permission are both required from Android 14.
+        -->
+        <service
+            android:name=".music.MusicPlaybackService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge"
+            xmlns:tools="http://schemas.android.com/tools">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+    </application>
+</manifest>

@@ -1,0 +1,474 @@
+package com.auris.app.ui.extensions
+
+import android.content.Context
+import android.util.Log
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.auris.app.data.local.entity.ExtensionEntity
+import com.auris.app.data.repository.ExtensionRepoStore
+import com.auris.app.data.repository.ExtensionRepository
+import com.auris.app.source.ExtensionApkReader
+import com.auris.app.source.repo.ApkSigner
+import com.auris.app.source.repo.SignatureVerdict
+import com.auris.app.source.repo.SignatureVerifier
+import com.auris.app.source.ExtensionLoader
+import com.auris.app.source.repo.ExtensionListItem
+import com.auris.app.source.repo.ExtensionRepo
+import com.auris.app.source.repo.ExtensionRepositoryClient
+import com.auris.app.source.repo.InstallProgress
+import com.auris.app.source.repo.extensionFile
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CompletableDeferred
+import com.auris.app.source.repo.isSecureRepositoryUrl
+import com.auris.app.source.repo.requireExtensionInstallConsent
+import java.io.File
+
+/** Callbacks the screen raises. */
+data class ExtensionsUiActions(
+    val onRefresh: () -> Unit = {},
+    val onInstall: (ExtensionListItem) -> Unit = { },
+    val onUninstall: (ExtensionListItem) -> Unit = { },
+    val onSetEnabled: (ExtensionListItem, Boolean) -> Unit = { _, _ -> },
+    val onToggleNsfw: (Boolean) -> Unit = { },
+    val onEditRepo: () -> Unit = {},
+    val onRetry: () -> Unit = {},
+    val onFocus: (ExtensionListItem) -> Unit = { },
+    val onDismissMessage: () -> Unit = {},
+    val onQueryChange: (String) -> Unit = {},
+    val onLoadMore: () -> Unit = {},
+    val onConfirmTrust: (Boolean) -> Unit = {},
+)
+
+data class ExtensionTrustRequest(val packageName: String, val fingerprint: String)
+
+/** Everything the extensions screen renders. */
+data class ExtensionsUiState(
+    val items: List<ExtensionListItem> = emptyList(),
+    val isLoading: Boolean = false,
+    val error: String? = null,
+    val installed: Int = 0,
+    val total: Int = 0,
+    val updates: Int = 0,
+    val showNsfw: Boolean = true,
+    val repoUrl: String = ExtensionRepo.DEFAULT.baseUrl,
+    /** Icon whose colours drive the screen's artwork gradient. */
+    val focusIconKey: String? = null,
+    val progress: Map<String, InstallProgress.Stage> = emptyMap(),
+    val message: String? = null,
+    val pendingTrust: ExtensionTrustRequest? = null,
+    /** Whether [message] reports a failure rather than a completed action. */
+    val isMessageError: Boolean = false,
+    /** Current search text; blank means no filtering. */
+    val query: String = "",
+    /** How many of [items] the list renders; the footer grows this page. */
+    val visibleCount: Int = PAGE_SIZE,
+) {
+    companion object {
+        /** One page of rows; small enough to keep first layout fast on 250+ repos. */
+        const val PAGE_SIZE = 50
+    }
+}
+
+/**
+ * State holder for the extensions screen.
+ *
+ * ### Local-first
+ * Installed state always comes from Room, never from the repo index, so the installed list
+ * stays correct offline and "installed but repo unreachable" is not an error state.
+ *
+ * ### Single writer
+ * All install/uninstall/toggle logic lives here rather than in a second service, so there is
+ * exactly one place that mutates either Room or the loader. Two writers previously meant the
+ * progress map and the list could disagree.
+ */
+class ExtensionsViewModel(
+    private val context: Context,
+    private val client: ExtensionRepositoryClient,
+    private val extensionRepository: ExtensionRepository,
+    private val extensionLoader: ExtensionLoader,
+    private val extensionsDir: File,
+    private val repoStore: ExtensionRepoStore,
+) : ViewModel() {
+
+    /**
+     * The repository, owned by [repoStore] and shared with Settings.
+     *
+     * Previously this ViewModel held its own copy, which meant a signing key entered in Settings
+     * never reached [install] — the field would have appeared to work while every extension
+     * stayed pinned. It now observes the store, so the key the user typed is the key used.
+     */
+    private val repo: StateFlow<ExtensionRepo> = repoStore.repo
+    private val remoteIndex = MutableStateFlow<List<ExtensionListItem>>(emptyList())
+    private val showNsfw = MutableStateFlow(true)
+    private val queryFlow = MutableStateFlow("")
+    private val focusIcon = MutableStateFlow<String?>(null)
+    private val progress = MutableStateFlow<Map<String, InstallProgress.Stage>>(emptyMap())
+
+    private val _state = MutableStateFlow(
+        ExtensionsUiState(isLoading = true, repoUrl = repoStore.current().baseUrl),
+    )
+    val state: StateFlow<ExtensionsUiState> = _state.asStateFlow()
+
+    init {
+        refresh()
+
+        viewModelScope.launch {
+            // Room is the installed-state source of truth; the index only says what *could* be
+            // installed, so a repo outage never makes an installed extension disappear.
+            combine(
+                extensionRepository.installed(),
+                remoteIndex,
+                repo,
+                showNsfw,
+                queryFlow,
+            ) { installed, remote, currentRepo, includeNsfw, query ->
+                val byPackage = installed.associateBy { it.packageName }
+                val items = remote
+                    .map { it.copy(installed = byPackage[it.remote.packageName]) }
+                    .filter { it.matchesListFilter(query, includeNsfw) }
+
+                Quad(
+                    items = items,
+                    repo = currentRepo,
+                    installedCount = installed.size,
+                    total = remote.size,
+                    updates = items.count { it.hasUpdate },
+                    query = query,
+                )
+            }.collect { snapshot ->
+                _state.value = _state.value.copy(
+                    items = snapshot.items,
+                    installed = snapshot.installedCount,
+                    total = snapshot.total,
+                    updates = snapshot.updates,
+                    repoUrl = snapshot.repo.baseUrl,
+                    showNsfw = showNsfw.value,
+                    query = snapshot.query,
+                )
+            }
+        }
+    }
+
+    private data class Quad(
+        val items: List<ExtensionListItem>,
+        val repo: ExtensionRepo,
+        val installedCount: Int,
+        val total: Int,
+        val updates: Int,
+        val query: String,
+    )
+
+    /** Re-reads the index. Safe to call repeatedly. */
+    fun refresh() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, error = null)
+
+            // Read once, so the index and every row it produces come from the same repository
+            // even if it changes mid-flight. Reading `repo.value` per row would let a user edit
+            // the URL during a fetch and get rows pointing at a repository that was never
+            // queried.
+            val repo = repo.value
+
+            client.fetchIndex(repo)
+                .onSuccess { index ->
+                    remoteIndex.value = index
+                        // A repo entry with no sources installs fine but offers nothing to
+                        // browse, so it would be a row that leads nowhere.
+                        .filter { it.sourceCount > 0 }
+                        .map { ExtensionListItem(it, repo, null) }
+                    _state.value = _state.value.copy(isLoading = false, error = null)
+                }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(
+                        isLoading = false,
+                        error = error.message ?: "Unknown error",
+                    )
+                }
+        }
+    }
+
+    /**
+     * Switches repository.
+     *
+     * A malformed URL is rejected here rather than at fetch time, so the error surfaces next
+     * to the field the user typed it into.
+     */
+    fun setRepoUrl(url: String) {
+        val trimmed = url.trim()
+        if (!isSecureRepositoryUrl(trimmed)) {
+            _state.value = _state.value.copy(error = "Repository URL must use https:// without embedded credentials")
+            return
+        }
+        repoStore.update { current ->
+            current.copy(baseUrl = trimmed, name = trimmed.substringAfterLast('/'))
+        }
+        refresh()
+    }
+
+    fun setNsfwVisible(visible: Boolean) {
+        showNsfw.value = visible
+    }
+
+    /**
+     * Filters the list by name, package name or language. Unfiltered search would
+     * scan every keystroke against 250+ rows remotely; this filters the already
+     * loaded index in memory, so typing never fires a request.
+     */
+    fun onQueryChange(query: String) {
+        queryFlow.value = query
+        // A new query reshuffles the list, so the page restarts rather than
+        // showing rows 50+ of a result set the user has not scrolled.
+        _state.value = _state.value.copy(visibleCount = ExtensionsUiState.PAGE_SIZE)
+    }
+
+    /** Grows the rendered window by one page. */
+    fun loadMore() {
+        _state.value = _state.value.copy(
+            visibleCount = _state.value.visibleCount + ExtensionsUiState.PAGE_SIZE,
+        )
+    }
+
+    fun consumeMessage() {
+        _state.value = _state.value.copy(message = null)
+    }
+
+    /**
+     * Downloads, verifies and registers [item], then loads it.
+     *
+     * Order matters: the APK lands on a `.part` name first and is only moved into place after
+     * its manifest has been parsed. A half-written file left in `extensionsDir` would be picked
+     * up by the loader on next launch and fail as a corrupt extension rather than a failed
+     * install.
+     */
+    private val installGuard = com.auris.app.source.repo.ExtensionInstallGuard()
+    private var trustDecision: CompletableDeferred<Boolean>? = null
+
+    fun confirmTrust(accepted: Boolean) {
+        trustDecision?.complete(accepted)
+    }
+
+    fun install(item: ExtensionListItem) {
+        val packageName = item.remote.packageName
+        if (!installGuard.acquire(packageName)) return
+        val installJob = viewModelScope.launch {
+            setStage(packageName, InstallProgress.Stage.DOWNLOADING)
+
+            var temp: File? = null
+
+            runCatching {
+                val target = extensionFile(extensionsDir, packageName)
+                val staged = extensionFile(extensionsDir, packageName, ".part").also { temp = it }
+                client.downloadApk(item.remote, item.repo, staged).getOrThrow()
+
+                setStage(packageName, InstallProgress.Stage.INSTALLING)
+
+                // Identity comes from the APK, not the index: an index could claim one package
+                // and ship another.
+                val identity = ExtensionApkReader.read(context, staged)
+                check(identity.packageName == packageName) {
+                    "APK declares ${identity.packageName}, expected $packageName"
+                }
+
+                // Signature check, before the file is allowed to become the installed APK.
+                //
+                // Order matters: the APK is still a `.part` file here, so a rejection deletes it
+                // and leaves the previous version installed. Verifying after the rename would
+                // mean a hostile APK had already replaced a good one, and the failure path would
+                // have to try to restore it.
+                val fingerprint = verifySignature(item, staged)
+
+                target.delete()
+                check(staged.renameTo(target)) { "Could not move downloaded APK into place" }
+                target.setReadOnly()
+
+                val registered = extensionRepository.register(
+                    ExtensionEntity(
+                        packageName = identity.packageName,
+                        label = item.remote.name,
+                        versionName = identity.versionName,
+                        versionCode = identity.versionCode,
+                        apkPath = target.absolutePath,
+                        signatureHash = identity.signatureHash,
+                        signingCertFingerprint = fingerprint,
+                        repoUrl = item.repo.baseUrl,
+                    ),
+                )
+
+                extensionLoader.unload(identity.packageName)
+                if (registered.enabled) extensionLoader.loadInstalled(registered, extensionsDir)
+            }.onSuccess {
+                // Without this the row's spinner never clears: the stage stays at
+                // INSTALLING and the row keeps rendering the progress indicator
+                // even though Room already reports the extension as installed.
+                progress.value = progress.value - packageName
+                _state.value = _state.value.copy(
+                    progress = progress.value,
+                    message = "Installed ${item.remote.name}",
+                    isMessageError = false,
+                )
+            }.onFailure { error ->
+                Log.w(TAG, "Install failed for $packageName", error)
+                setStage(packageName, InstallProgress.Stage.FAILED)
+                _state.value = _state.value.copy(
+                    message = "Install failed: ${error.message}",
+                    isMessageError = true,
+                )
+                runCatching { temp?.delete() }
+            }
+        }
+        installJob.invokeOnCompletion { installGuard.release(packageName) }
+    }
+
+    /**
+     * Checks [apkPath]'s signing certificate against the repository's claim and this extension's
+     * existing pin, and returns the fingerprint to record.
+     *
+     * Throws when the APK must not be installed. [runCatching] in [install] turns that into a
+     * failed install, and the `.part` file is deleted, so a rejected APK never reaches the
+     * extensions directory and is never handed to the [extensionLoader].
+     */
+    private suspend fun verifySignature(item: ExtensionListItem, apkPath: File): String {
+        val observed = ApkSigner.fingerprints(context.packageManager, apkPath.absolutePath)
+
+        // Read *before* registering, so an update is checked against the pin from the install
+        // it replaces rather than against itself.
+        val pinned = extensionRepository.find(item.remote.packageName)?.signingCertFingerprint
+
+        val verdict = SignatureVerifier.verify(
+            declaredFingerprint = item.repo.signingKeyFingerprint,
+            observed = observed,
+            previouslyPinned = pinned,
+        )
+
+        requireExtensionInstallConsent(verdict) { fingerprint ->
+            check(trustDecision == null) { "Another extension is awaiting trust approval" }
+            val decision = CompletableDeferred<Boolean>()
+            trustDecision = decision
+            _state.value = _state.value.copy(pendingTrust = ExtensionTrustRequest(item.remote.packageName, fingerprint))
+            try {
+                decision.await()
+            } finally {
+                trustDecision = null
+                _state.value = _state.value.copy(pendingTrust = null)
+            }
+        }
+
+        return when (verdict) {
+            is SignatureVerdict.Trusted -> {
+                // Prefer the pinned value so an update that legitimately adds a second signer
+                // does not silently re-pin to a different key.
+                val chosen = pinned
+                    ?.takeIf { SignatureVerifier.normalize(it) != null }
+                    ?: observed.first()
+                Log.i(TAG, "Signature trusted for ${item.remote.packageName} (${chosen.take(12)}…)")
+                chosen
+            }
+
+            is SignatureVerdict.Pinned -> {
+                Log.w(
+                    TAG,
+                    "No declared signing key for ${item.remote.packageName}; " +
+                        "pinning ${verdict.fingerprint.take(12)}… on first install",
+                )
+                verdict.fingerprint
+            }
+
+            is SignatureVerdict.Rejected -> {
+                Log.w(TAG, "Signature rejected for ${item.remote.packageName}: ${verdict.reason}")
+                error(verdict.reason)
+            }
+        }
+    }
+
+    /** Uninstalls and drops the APK so a stale file cannot be loaded next launch. */
+    fun uninstall(item: ExtensionListItem) {
+        viewModelScope.launch {
+            runCatching {
+                extensionRepository.uninstall(item.remote.packageName, extensionsDir)
+                extensionLoader.unload(item.remote.packageName)
+            }.onSuccess {
+                _state.value = _state.value.copy(
+                    message = "Removed ${item.remote.name}",
+                    isMessageError = false,
+                )
+            }.onFailure {
+                _state.value = _state.value.copy(
+                    message = "Could not remove extension: ${it.message}",
+                    isMessageError = true,
+                )
+            }
+        }
+    }
+
+    fun setEnabled(item: ExtensionListItem, enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching {
+                val installed = extensionRepository.find(item.remote.packageName) ?: return@launch
+                if (enabled) extensionLoader.loadInstalled(installed, extensionsDir)
+                else extensionLoader.unload(installed.packageName)
+                extensionRepository.setEnabled(installed.packageName, enabled)
+            }.onFailure {
+                _state.value = _state.value.copy(
+                    message = "Could not enable extension: ${it.message}",
+                    isMessageError = true,
+                )
+            }
+        }
+    }
+
+    fun focus(item: ExtensionListItem) {
+        focusIcon.value = item.iconUrl
+        _state.value = _state.value.copy(focusIconKey = item.iconUrl)
+    }
+
+    private fun setStage(packageName: String, stage: InstallProgress.Stage) {
+        progress.value = progress.value + (packageName to stage)
+        _state.value = _state.value.copy(progress = progress.value)
+    }
+
+    companion object {
+        private const val TAG = "AurisExtensions"
+    }
+
+    /** Factory: avoids a DI framework for one screen. */
+    class Factory(
+        private val context: Context,
+        private val client: ExtensionRepositoryClient,
+        private val extensionRepository: ExtensionRepository,
+        private val extensionLoader: ExtensionLoader,
+        private val extensionsDir: File,
+        private val repoStore: ExtensionRepoStore,
+    ) : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            ExtensionsViewModel(
+                context = context,
+                client = client,
+                extensionRepository = extensionRepository,
+                extensionLoader = extensionLoader,
+                extensionsDir = extensionsDir,
+                repoStore = repoStore,
+            ) as T
+    }
+}
+
+/** Actions the screen binds to a view model's command surface. */
+fun ExtensionsViewModel.actions(): ExtensionsUiActions = ExtensionsUiActions(
+    onRefresh = ::refresh,
+    onInstall = ::install,
+    onUninstall = ::uninstall,
+    onSetEnabled = ::setEnabled,
+    onToggleNsfw = ::setNsfwVisible,
+    onEditRepo = {},
+    onRetry = ::refresh,
+    onFocus = ::focus,
+    onDismissMessage = ::consumeMessage,
+    onQueryChange = ::onQueryChange,
+    onLoadMore = ::loadMore,
+    onConfirmTrust = ::confirmTrust,
+)

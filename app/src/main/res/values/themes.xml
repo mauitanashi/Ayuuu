@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      Shared window configuration. Split into a Base style so `values-v31` can add the splash
+      attributes on API 31+ without restating (or losing) the common ones — the v31 override of
+      Theme.Auris resolves its parent to this.
+    -->
+    <style name="Theme.Auris.Base" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/auris_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="q">false</item>
+        <item name="android:enforceStatusBarContrast" tools:targetApi="q">false</item>
+    </style>
+
+    <style name="Theme.Auris" parent="Theme.Auris.Base" />
+</resources>

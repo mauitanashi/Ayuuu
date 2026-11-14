@@ -1,0 +1,355 @@
+package com.auris.app.ui.reader
+
+import android.util.Log
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.auris.app.data.local.entity.LibraryEntryEntity
+import com.auris.app.data.local.entity.LibraryUnitEntity
+import com.auris.app.data.repository.ExtensionContentRepository
+import com.auris.app.data.repository.LibraryRepository
+import com.auris.app.source.Page
+import com.auris.app.source.SourceUnit
+import com.auris.app.ui.source.PreviewDetail
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import com.auris.app.core.model.EntryStatus
+
+/** Everything the reader renders. */
+data class MangaReaderUiState(
+    val title: String = "",
+    val chapterTitle: String = "",
+    val pages: List<Page> = emptyList(),
+    /** Zero-based index of the visible page. */
+    val currentPage: Int = 0,
+    val isLoading: Boolean = false,
+    /** Set once loading finishes with nothing to show. */
+    val isEmpty: Boolean = false,
+    val error: String? = null,
+    /** Progress overlay visibility; toggled by a tap. */
+    val isOverlayVisible: Boolean = false,
+    val previousChapter: Int? = null,
+    val nextChapter: Int? = null,
+) {
+    val totalPages: Int get() = pages.size
+
+    /** "3 / 24". */
+    val progressLabel: String get() = if (totalPages == 0) "0 / 0" else "${currentPage + 1} / $totalPages"
+}
+
+/**
+ * Drives the manga reader: resolves the chapter and its page images.
+ *
+ * ### Pages are never cached here
+ * Manga image URLs are frequently signed or session-scoped and expire within minutes, so a
+ * cached URL would be worse than no cache — it fails to load on the next open and looks like
+ * corruption. Coil's disk cache handles repeat views without involving this class, and Coil
+ * keys on the URL, so an expired URL misses the cache cleanly rather than serving a stale
+ * image.
+ *
+ * ### One shot per open
+ * Pages are resolved once. Re-resolving on every configuration change would re-scrape the
+ * chapter and, on a slow connection, drop the reader back to a spinner while rotating.
+ */
+class MangaReaderViewModel(
+    private val entryId: String,
+    private val unitIndex: Int,
+    private val libraryRepository: LibraryRepository? = null,
+    private val contentRepository: ExtensionContentRepository,
+    private val preview: PreviewDetail? = null,
+    private val previewUnits: List<SourceUnit>? = null,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(MangaReaderUiState(isLoading = true))
+    val state: StateFlow<MangaReaderUiState> = _state.asStateFlow()
+
+    /** Survives recomposition; the pager owns its own scroll, so this is only a restore hint. */
+    private var pageLoadStarted = false
+    private var pageLoadJob: Job? = null
+
+    init {
+        if (preview != null) {
+            val entry = contentRepository.entryForSourceItem(
+                sourceItem = preview.item,
+                sourcePackageName = preview.sourcePackageName,
+                sourceAniyomiId = preview.sourceAniyomiId,
+                mediaType = preview.mediaType,
+            ).copy(sourceId = preview.sourceId)
+            applyPreviewMetadata(entry, previewUnits.orEmpty())
+        } else if (libraryRepository != null) {
+            viewModelScope.launch {
+                // Entry and chapter metadata together, so the title never disagrees with the pages.
+                combine(
+                    libraryRepository.observeEntry(entryId),
+                    libraryRepository.observeUnits(entryId),
+                ) { entry, units -> entry to units }
+                    .collect { (entry, units) -> applyMetadata(entry, units) }
+            }
+        }
+        pageLoadJob = viewModelScope.launch { loadPages() }
+    }
+
+    private fun applyMetadata(entry: LibraryEntryEntity?, units: List<LibraryUnitEntity>) {
+        if (entry == null) {
+            _state.value = _state.value.copy(
+                isLoading = false,
+                error = "This chapter is no longer in your library",
+            )
+            return
+        }
+
+        // Never silently substitute a different chapter for a stale saved route.
+        val chapter = units.firstOrNull { it.unitIndex == unitIndex }
+        val position = chapter?.let { units.indexOf(it) } ?: -1
+
+        _state.value = _state.value.copy(
+            title = entry.title,
+            chapterTitle = chapter?.title.orEmpty(),
+            previousChapter = position.takeIf { it > 0 }?.let { units[it - 1].unitIndex },
+            nextChapter = position.takeIf { it >= 0 && it < units.lastIndex }?.let { units[it + 1].unitIndex },
+        )
+    }
+
+    private fun applyPreviewMetadata(entry: LibraryEntryEntity, units: List<SourceUnit>) {
+        val chapter = units.firstOrNull { it.index == unitIndex }
+        val position = chapter?.let { units.indexOf(it) } ?: -1
+
+        _state.value = _state.value.copy(
+            title = entry.title,
+            chapterTitle = chapter?.title.orEmpty(),
+            previousChapter = position.takeIf { it > 0 }?.let { units[it - 1].index },
+            nextChapter = position.takeIf { it >= 0 && it < units.lastIndex }?.let { units[it + 1].index },
+        )
+    }
+
+    /** Resolves the chapter's page images. Runs once per ViewModel. */
+    private suspend fun loadPages() {
+        if (pageLoadStarted) return
+        pageLoadStarted = true
+
+        if (preview != null) {
+            loadPreviewPages(preview)
+            return
+        }
+
+        val repo = libraryRepository ?: run {
+            _state.value = _state.value.copy(isLoading = false, error = "Chapter not found")
+            return
+        }
+
+        val entry = repo.observeEntry(entryId).first() ?: run {
+            _state.value = _state.value.copy(isLoading = false, error = "Chapter not found")
+            return
+        }
+
+        var units = repo.observeUnits(entryId).first()
+        var chapter = units.firstOrNull { it.unitIndex == unitIndex }
+
+        if (chapter == null) {
+            // Self-healing fallback: if units haven't been synced to Room yet, attempt to refresh
+            contentRepository.refreshUnits(entry)
+            units = repo.observeUnits(entryId).first()
+            chapter = units.firstOrNull { it.unitIndex == unitIndex }
+        }
+
+        if (chapter == null) {
+            _state.value = _state.value.copy(
+                isLoading = false,
+                isEmpty = true,
+                error = "This chapter is no longer available. Go back and refresh the chapter list.",
+            )
+            return
+        }
+
+        contentRepository.fetchPages(
+            entry = entry,
+            unit = SourceUnit(
+                url = chapter.sourceUnitId.orEmpty(),
+                index = chapter.unitIndex,
+                title = chapter.title,
+            ),
+        )
+            .onSuccess { pages ->
+                val restoredPage = chapter.lastPositionMs.toInt().coerceIn(0, (pages.size - 1).coerceAtLeast(0))
+                _state.value = _state.value.copy(
+                    pages = pages,
+                    currentPage = restoredPage,
+                    isLoading = false,
+                    // Distinguishing "empty" from "loaded nothing" matters: the first needs a
+                    // spinner, the second needs an explanation.
+                    isEmpty = pages.isEmpty(),
+                    error = if (pages.isEmpty()) "This chapter has no readable pages" else null,
+                )
+                currentPageComplete = false
+                if (pages.isNotEmpty()) saveProgress(restoredPage, false)
+            }
+            .onFailure { error ->
+                if (error is CancellationException) throw error
+                Log.w(TAG, "Page load failed for $entryId/$unitIndex: ${error.message}")
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    error = if (error is ExtensionContentRepository.UnavailableException) {
+                        error.message
+                    } else {
+                        "Could not load this chapter. Check your connection and try again."
+                    },
+                )
+            }
+    }
+
+    private suspend fun loadPreviewPages(preview: PreviewDetail) {
+        val entry = contentRepository.entryForSourceItem(
+            sourceItem = preview.item,
+            sourcePackageName = preview.sourcePackageName,
+            sourceAniyomiId = preview.sourceAniyomiId,
+            mediaType = preview.mediaType,
+        ).copy(sourceId = preview.sourceId)
+
+        var units = previewUnits.orEmpty()
+        if (units.isEmpty()) {
+            units = contentRepository.fetchUnits(entry).getOrDefault(emptyList())
+        }
+        applyPreviewMetadata(entry, units)
+
+        val chapter = units.firstOrNull { it.index == unitIndex }
+        if (chapter == null) {
+            _state.value = _state.value.copy(
+                isLoading = false,
+                isEmpty = true,
+                error = "This chapter is no longer available. Go back and refresh the chapter list.",
+            )
+            return
+        }
+
+        contentRepository.fetchPages(entry = entry, unit = chapter)
+            .onSuccess { pages ->
+                _state.value = _state.value.copy(
+                    pages = pages,
+                    currentPage = 0,
+                    isLoading = false,
+                    isEmpty = pages.isEmpty(),
+                    error = if (pages.isEmpty()) "This chapter has no readable pages" else null,
+                )
+                currentPageComplete = false
+            }
+            .onFailure { error ->
+                if (error is CancellationException) throw error
+                Log.w(TAG, "Page load failed for preview/$unitIndex: ${error.message}")
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    error = if (error is ExtensionContentRepository.UnavailableException) {
+                        error.message
+                    } else {
+                        "Could not load this chapter. Check your connection and try again."
+                    },
+                )
+            }
+    }
+
+    fun onPageChanged(index: Int) = onPageProgress(index, true)
+
+    private var currentPageComplete = false
+
+    fun onPageProgress(index: Int, pageComplete: Boolean) {
+        if (_state.value.isLoading || index !in _state.value.pages.indices) return
+        if (index == _state.value.currentPage && currentPageComplete == pageComplete) return
+        currentPageComplete = pageComplete
+        _state.value = _state.value.copy(currentPage = index)
+        saveProgress(index, pageComplete)
+    }
+
+    private var progressJob: Job? = null
+
+    private fun saveProgress(index: Int, pageComplete: Boolean) {
+        if (preview != null || libraryRepository == null) return
+        progressJob?.cancel()
+        progressJob = viewModelScope.launch {
+            val units = libraryRepository.observeUnits(entryId).first()
+            val chapter = units.firstOrNull { it.unitIndex == unitIndex } ?: return@launch
+            val complete = chapter.isWatched || (pageComplete && index == _state.value.totalPages - 1)
+            // Manga uses lastPositionMs as a zero-based page index; audio/video keep milliseconds.
+            libraryRepository.updateUnitProgress(entryId, unitIndex, complete, index.toLong())
+            val fraction = if (chapter.isWatched) 1f else
+                (index + if (pageComplete) 1f else 0f) / _state.value.totalPages.coerceAtLeast(1)
+            val ordinal = units.indexOfFirst { it.unitIndex == unitIndex }.coerceAtLeast(0)
+            libraryRepository.updateProgress(entryId, (ordinal + fraction) / units.size.coerceAtLeast(1),
+                unitIndex, chapter.title, index.toLong(),
+                if (complete && ordinal == units.lastIndex) EntryStatus.COMPLETED else EntryStatus.IN_PROGRESS,
+                mediaType = com.auris.app.core.model.MediaType.MANGA)
+        }
+    }
+
+    /** Tapping the page surface shows or hides the progress overlay. */
+    fun toggleOverlay() {
+        _state.value = _state.value.copy(isOverlayVisible = !_state.value.isOverlayVisible)
+    }
+
+    fun retry() {
+        pageLoadJob?.cancel()
+        pageLoadStarted = false
+        pageLoadJob = viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, error = null, isEmpty = false)
+            loadPages()
+        }
+    }
+
+    private class Factory(
+        private val entryId: String,
+        private val unitIndex: Int,
+        private val libraryRepository: LibraryRepository,
+        private val contentRepository: ExtensionContentRepository,
+    ) : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            MangaReaderViewModel(
+                entryId = entryId,
+                unitIndex = unitIndex,
+                libraryRepository = libraryRepository,
+                contentRepository = contentRepository,
+            ) as T
+    }
+
+    private class PreviewFactory(
+        private val preview: PreviewDetail,
+        private val previewUnits: List<SourceUnit>,
+        private val unitIndex: Int,
+        private val contentRepository: ExtensionContentRepository,
+    ) : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            MangaReaderViewModel(
+                entryId = "",
+                unitIndex = unitIndex,
+                libraryRepository = null,
+                contentRepository = contentRepository,
+                preview = preview,
+                previewUnits = previewUnits,
+            ) as T
+    }
+
+    companion object {
+        private const val TAG = "AurisReader"
+
+        fun factory(
+            entryId: String,
+            unitIndex: Int,
+            libraryRepository: LibraryRepository,
+            contentRepository: ExtensionContentRepository,
+        ): ViewModelProvider.Factory =
+            Factory(entryId, unitIndex, libraryRepository, contentRepository)
+
+        fun previewFactory(
+            preview: PreviewDetail,
+            previewUnits: List<SourceUnit>,
+            unitIndex: Int,
+            contentRepository: ExtensionContentRepository,
+        ): ViewModelProvider.Factory =
+            PreviewFactory(preview, previewUnits, unitIndex, contentRepository)
+    }
+}

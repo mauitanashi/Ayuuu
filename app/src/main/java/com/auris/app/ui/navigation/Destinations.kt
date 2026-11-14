@@ -1,0 +1,74 @@
+package com.auris.app.ui.navigation
+
+import androidx.annotation.StringRes
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.SmartDisplay
+import androidx.compose.ui.graphics.vector.ImageVector
+import com.auris.app.R
+
+/**
+ * Top-level destinations. The floating pill shows exactly these five.
+ *
+ * Routes are declared as constants rather than a sealed hierarchy because detail routes
+ * (player, reader, episode list) are added incrementally and should not force edits here.
+ */
+enum class TopLevelDestination(
+    val route: String,
+    @StringRes val labelRes: Int,
+    val icon: ImageVector,
+) {
+    HOME("home", R.string.nav_home, Icons.Filled.Home),
+    ANIME("anime", R.string.nav_anime, Icons.Filled.SmartDisplay),
+    MANGA("manga", R.string.nav_manga, Icons.AutoMirrored.Filled.MenuBook),
+    MUSIC("music", R.string.nav_music, Icons.Filled.LibraryMusic),
+    LIBRARY("library", R.string.nav_library, Icons.Filled.GridView),
+}
+
+/** Detail and full-screen routes, addressed by helper builders to avoid string typos. */
+object Routes {
+    /**
+     * The full-screen player.
+     *
+     * Deliberately takes no argument: it renders whatever the playback service is doing, which
+     * is the only source of truth once audio is playing. The old `player/{entryId}` screen
+     * rendered a library row and could not start or control playback at all.
+     */
+    const val PLAYER = "player"
+    const val ANIME_DETAIL = "anime/{entryId}"
+    /** A catalogue title that has not been saved yet; the payload lives in the NavHost holder. */
+    const val ANIME_PREVIEW = "anime/preview/{previewId}"
+    const val MANGA_READER = "manga/reader/{entryId}/{unitIndex}"
+    /** Ephemeral manga reading from an unsaved catalogue preview. */
+    const val MANGA_READER_PREVIEW = "manga/reader/preview/{previewId}/{unitIndex}"
+    const val EXTENSIONS = "settings/extensions"
+    const val SEARCH = "search"
+    const val EPISODE_PLAYER = "play/episode/{entryId}/{unitIndex}"
+    /** Ephemeral episode playback from an unsaved catalogue preview. */
+    const val EPISODE_PLAYER_PREVIEW = "play/episode/preview/{previewId}/{unitIndex}"
+    const val DIAGNOSTICS = "settings/diagnostics"
+    const val MUSIC_BROWSE = "music/browse"
+    const val SETTINGS = "settings"
+
+    /**
+     * A source's catalogue, addressed by [SourceResolver.keyOf]'s key.
+     *
+     * The only route in the app that addresses a *source* rather than a library entry, which is
+     * why it has to exist: without it an installed extension can never be browsed.
+     */
+    const val CATALOGUE = "catalogue/{sourceKey}"
+
+    fun animeDetail(entryId: String) = "anime/$entryId"
+    fun animePreview(previewId: String) = "anime/preview/$previewId"
+    fun mangaReader(entryId: String, unitIndex: Int) = "manga/reader/$entryId/$unitIndex"
+    fun mangaReaderPreview(previewId: String, unitIndex: Int) = "manga/reader/preview/$previewId/$unitIndex"
+    fun episodePlayer(entryId: String, unitIndex: Int) = "play/episode/$entryId/$unitIndex"
+    fun episodePlayerPreview(previewId: String, unitIndex: Int) = "play/episode/preview/$previewId/$unitIndex"
+    const val diagnostics = DIAGNOSTICS
+    const val settings = SETTINGS
+
+    fun catalogue(sourceKey: String) = "catalogue/$sourceKey"
+}

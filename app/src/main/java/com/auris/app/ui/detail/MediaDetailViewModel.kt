@@ -1,0 +1,543 @@
+package com.auris.app.ui.detail
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.auris.app.core.model.MediaType
+import com.auris.app.data.local.entity.LibraryEntryEntity
+import com.auris.app.data.local.entity.LibraryUnitEntity
+import com.auris.app.data.remote.kitsu.KitsuMetadata
+import com.auris.app.data.repository.ExtensionContentRepository
+import com.auris.app.data.repository.KitsuIdentifier
+import com.auris.app.data.repository.LibraryRepository
+import com.auris.app.source.*
+import com.auris.app.ui.source.PreviewDetail
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import com.auris.app.source.SourceUnit
+import com.auris.app.source.StreamTarget
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
+
+/**
+ * Drives the media detail screen: entry metadata, Kitsu identification, and extension units.
+ *
+ * ### Two modes: saved and preview
+ * With a [preview], the screen renders a catalogue title that has no library row yet:
+ * title/poster are seeded from the [PreviewDetail] item, Kitsu is fetched via
+ * [KitsuIdentifier.findBestMatch] **without writing**, and units come from the fetch-only
+ * [ExtensionContentRepository.fetchUnits]. The row is written only by [savePreview].
+ * Without a preview the existing saved-entry flow observes Room exactly as before.
+ *
+ * ### Three independent concerns, deliberately not serialised
+ * Room metadata, the Kitsu lookup and the extension unit fetch are launched **separately**.
+ * Awaiting them in sequence would make a slow Kitsu call delay the episode list by seconds for
+ * no reason — the list is what the user came for. A Kitsu outage must also not be able to
+ * prevent units from loading, or the reverse.
+ *
+ * ### Identification is triggered, not awaited
+ * [identifyIfNeeded] fires once per entry and never blocks the UI. The screen shows the
+ * extension's own title immediately and Kitsu's richer metadata replaces it when it lands;
+ * waiting on a network call before showing a title the user just tapped feels broken.
+ */
+class MediaDetailViewModel(
+    private val entryId: String,
+    private val libraryRepository: LibraryRepository,
+    private val identifier: KitsuIdentifier,
+    private val contentRepository: ExtensionContentRepository,
+    private val preview: PreviewDetail? = null,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(MediaDetailUiState())
+    val state: StateFlow<MediaDetailUiState> = _state.asStateFlow()
+
+    /**
+     * Guards so each side effect fires once per entry.
+     *
+     * Necessary because this class writes to Room, and every write re-emits the observed entry.
+     * Without the guards, saving a `kitsuId` would immediately trigger a second Kitsu search,
+     * which would then save nothing, and the loop would continue.
+     */
+    private var identificationStarted = false
+    private var unitsStarted = false
+
+    /**
+     * Whether the Kitsu lookup has finished, one way or the other.
+     *
+     * A plain flag rather than deriving it from `isMetadataLoading` / `metadataUnavailable`:
+     * those two cannot distinguish "not started" from "started and in flight" from "finished",
+     * and this class must not re-arm the spinner on each Room emission.
+     */
+    private var identificationDone = false
+
+    /** Latest entry, needed by [onUnitClick] which is invoked outside a `collect`. */
+    private var currentEntry: LibraryEntryEntity? = null
+
+    /** Transient row shape for a preview; never written to Room until [savePreview]. */
+    private var previewEntry: LibraryEntryEntity? = null
+
+    /** Transient Kitsu enrichment held until [savePreview] overlays it onto the row. */
+    private var transientMetadata: KitsuMetadata? = null
+
+    init {
+        if (preview != null) {
+            seedPreview(preview)
+        } else {
+            // Entry and stored units are observed as one stream so the screen can never render an
+            // entry against a unit list belonging to a different entry.
+            viewModelScope.launch {
+                combine(
+                    libraryRepository.observeEntry(entryId),
+                    libraryRepository.observeUnits(entryId),
+                ) { entry, units -> entry to units }
+                    .collect { (entry, units) ->
+                        if (entry == null) {
+                            _state.value = _state.value.copy(
+                                error = "This entry is no longer in your library",
+                            )
+                            return@collect
+                        }
+
+                        currentEntry = entry
+                        _state.value = _state.value.withEntry(entry, units)
+
+                        if (!identificationStarted) {
+                            identificationStarted = true
+                            identifyIfNeeded(entry)
+                        }
+                        if (!unitsStarted) {
+                            unitsStarted = true
+                            refreshUnits()
+                            loadSeasons(entry)
+                        }
+                    }
+            }
+        }
+    }
+
+    /** Seeds the preview from the source item and fetches without writing. */
+    private fun seedPreview(detail: PreviewDetail) {
+        previewEntry = contentRepository.entryForSourceItem(
+            sourceItem = detail.item,
+            sourcePackageName = detail.sourcePackageName,
+            sourceAniyomiId = detail.sourceAniyomiId,
+            mediaType = detail.mediaType,
+        ).copy(sourceId = detail.sourceId)
+
+        _state.value = MediaDetailUiState(
+            mediaType = detail.mediaType,
+            title = detail.item.title,
+            posterUrl = detail.item.thumbnailUrl,
+            totalUnits = detail.item.episodeCount,
+            isMetadataLoading = true,
+            isUnitsLoading = true,
+            isPreview = true,
+            isSaved = false,
+        )
+        fetchPreviewMetadata()
+        refreshPreviewUnits()
+        previewEntry?.let { loadSeasons(it) }
+        checkSavedPreview()
+    }
+
+    /**
+     * A re-opened title may already be in the library (saved, backed out, re-tapped from
+     * the catalogue). Surface that so the preview shows Saved instead of Save again.
+     * `isPreview` stays true — this is still the preview route — but `isSaved` flips
+     * so the Save button is gone and unit/season gates open via [currentEntry].
+     */
+    private fun checkSavedPreview() {
+        val entry = previewEntry ?: return
+        viewModelScope.launch {
+            val existing = runCatching {
+                libraryRepository.findBySource(entry.mediaType, entry.sourceId, entry.sourceKey)
+            }.getOrNull() ?: return@launch
+            currentEntry = existing
+            _state.value = _state.value.copy(
+                isSaved = true,
+                savedEntryId = existing.id,
+                message = "Saved to Library ✓",
+            )
+        }
+    }
+
+    private fun fetchPreviewMetadata() {
+        val entry = previewEntry ?: return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isMetadataLoading = true)
+            // Fetch-only: findBestMatch reads Kitsu and never writes. The enriched
+            // fields are held in transientMetadata until savePreview overlays them.
+            val match = runCatching { identifier.findBestMatch(entry) }.getOrNull()
+            identificationDone = true
+            if (match == null) {
+                _state.value = _state.value.copy(
+                    isMetadataLoading = false,
+                    metadataUnavailable = true,
+                )
+            } else {
+                transientMetadata = match.metadata
+                val meta = match.metadata
+                _state.value = _state.value.copy(
+                    isMetadataLoading = false,
+                    synopsis = meta.synopsis,
+                    posterUrl = meta.posterUrl ?: _state.value.posterUrl,
+                    coverUrl = meta.coverUrl,
+                    englishTitle = meta.englishTitle,
+                    originalTitle = meta.originalTitle,
+                    averageRating = meta.averageRating,
+                    status = meta.status.name,
+                    subtype = meta.subtype,
+                    totalUnits = meta.unitCount ?: _state.value.totalUnits,
+                )
+            }
+        }
+    }
+
+    private fun refreshPreviewUnits() {
+        val entry = previewEntry ?: return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isUnitsLoading = true, error = null)
+            // Fetch-only: never refreshUnits, which would persist units for a row
+            // that does not exist yet.
+            contentRepository.fetchUnits(entry)
+                .onSuccess { units ->
+                    _state.value = _state.value.copy(isUnitsLoading = false, units = units)
+                }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(
+                        isUnitsLoading = false,
+                        error = error.toUserMessage(),
+                    )
+                }
+        }
+    }
+
+    /** Persists the preview on explicit Save; the only write in preview mode. */
+    fun savePreview() {
+        val detail = preview ?: return
+        if (_state.value.isSaved) return
+        viewModelScope.launch {
+            try {
+                var row = contentRepository.entryForSourceItem(
+                    sourceItem = detail.item,
+                    sourcePackageName = detail.sourcePackageName,
+                    sourceAniyomiId = detail.sourceAniyomiId,
+                    mediaType = detail.mediaType,
+                ).copy(sourceId = detail.sourceId)
+                transientMetadata?.let { row = identifier.apply(row, it) }
+                // Re-check: a row saved since this preview was seeded (or a double-tap
+                // racing the seed check) must flip to saved without upserting again.
+                val existing = libraryRepository.findBySource(row.mediaType, row.sourceId, row.sourceKey)
+                if (existing != null) {
+                    currentEntry = existing
+                    previewEntry = existing
+                    _state.value = _state.value.copy(
+                        isSaved = true,
+                        savedEntryId = existing.id,
+                        message = "Saved to Library ✓",
+                    )
+                    launch { contentRepository.refreshUnits(existing) }
+                    return@launch
+                }
+                val saved = libraryRepository.upsert(row)
+                currentEntry = saved
+                previewEntry = saved
+                _state.value = _state.value.copy(
+                    isSaved = true,
+                    savedEntryId = saved.id,
+                    message = "Saved to Library ✓",
+                )
+                launch { contentRepository.refreshUnits(saved) }
+            } catch (error: CancellationException) { throw error
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(
+                    message = error.message ?: "Could not save to library.",
+                )
+            }
+        }
+    }
+
+    private fun loadSeasons(entry: LibraryEntryEntity) {
+        val source = contentRepository.resolveSource(entry) as? AnimeSeasonSource ?: return
+        viewModelScope.launch {
+            try {
+                val seasons = withContext(Dispatchers.IO) {
+                    source.seasons(SourceItem(entry.sourceKey, entry.title, entry.artworkUrl))
+                }
+                _state.value = _state.value.copy(seasons = seasons, seasonsError = null)
+            } catch (error: CancellationException) { throw error
+            } catch (_: Exception) {
+                _state.value = _state.value.copy(seasonsError = "Other seasons could not load. Tap Retry to try again.")
+            }
+        }
+    }
+
+    fun openSeason(season: SourceSeason, onOpen: (String) -> Unit) {
+        if (season.isCurrent) return
+        // A preview has no persisted row to attach a season to; Save first.
+        if (_state.value.isPreview && !_state.value.isSaved) return
+        val current = currentEntry ?: return
+        viewModelScope.launch {
+            try {
+                val existing = libraryRepository.findBySource(current.mediaType, current.sourceId, season.item.url)
+                val entry = existing ?: libraryRepository.upsert(LibraryEntryEntity(
+                    mediaType = current.mediaType, sourceId = current.sourceId,
+                    sourceKey = season.item.url, remoteMediaId = season.item.url,
+                    title = season.item.title, artworkUrl = season.item.thumbnailUrl,
+                ))
+                onOpen(entry.id)
+            } catch (error: CancellationException) { throw error
+            } catch (_: Exception) {
+                _state.value = _state.value.copy(error = "Could not open this season. Please retry.")
+            }
+        }
+    }
+
+    /**
+     * Fetches Kitsu metadata for an unidentified entry or one missing its description.
+     *
+     * Previously identified entries are fetched by their stored Kitsu id. Music is skipped
+     * because Kitsu does not catalogue it.
+     */
+    private fun identifyIfNeeded(entry: LibraryEntryEntity) {
+        if (entry.kitsuId != null && !entry.description.isNullOrBlank() && entry.kitsuRating != null) {
+            identificationDone = true
+            _state.value = _state.value.copy(isMetadataLoading = false)
+            // English titles are never persisted (no column), so even a fully identified row
+            // still needs a fetch-only lookup to surface one. Never writes.
+            fetchSavedEnglishTitle(entry)
+            return
+        }
+        if (entry.mediaType == MediaType.MUSIC) {
+            identificationDone = true
+            _state.value = _state.value.copy(
+                isMetadataLoading = false,
+                // Stated rather than silently omitted, so a bare title reads as "no catalogue
+                // data" rather than "still loading".
+                metadataUnavailable = true,
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isMetadataLoading = true)
+
+            val match = identifier.identifyAndPersist(entry)
+
+            // On success the Room write re-emits the entry, which is what actually puts the
+            // enriched metadata on screen. Only the "nothing found" path is handled here, so the
+            // spinner cannot spin forever.
+            identificationDone = true
+            if (match == null) {
+                // On success the Room write re-emits the entry, which is what puts the enriched
+                // metadata on screen. Only the miss is handled here so the spinner cannot spin
+                // forever.
+                _state.value = _state.value.copy(
+                    isMetadataLoading = false,
+                    metadataUnavailable = true,
+                )
+            } else {
+                // English is display-only (no persisted column): surface it from the match
+                // while the Room re-emission carries the persisted fields.
+                _state.value = _state.value.copy(englishTitle = match.metadata.englishTitle)
+            }
+        }
+    }
+
+    /** Fetch-only English title for an already-identified saved row; never persists. */
+    private fun fetchSavedEnglishTitle(entry: LibraryEntryEntity) {
+        if (entry.mediaType == MediaType.MUSIC) return
+        viewModelScope.launch {
+            val match = runCatching { identifier.findBestMatch(entry) }.getOrNull() ?: return@launch
+            val english = match.metadata.englishTitle ?: return@launch
+            _state.value = _state.value.copy(englishTitle = english)
+        }
+    }
+
+    /**
+     * Re-fetches units from the extension and persists them.
+     *
+     * The stored list from Room is already on screen; this refreshes it. A failure leaves the
+     * stored list untouched — a stored list is still the best information available when the
+     * network is down, and clearing it would turn a transient error into data loss.
+     */
+    fun refreshUnits() {
+        if (_state.value.isPreview) {
+            refreshPreviewUnits()
+            return
+        }
+        val entry = currentEntry ?: return
+
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isUnitsLoading = true, error = null)
+
+            contentRepository.refreshUnits(entry)
+                .onSuccess {
+                    // Room re-emits with the new units; the flag clears on that emission too, so
+                    // it is cleared here only to cover the "returned but identical" case.
+                    _state.value = _state.value.copy(isUnitsLoading = false)
+                }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(
+                        isUnitsLoading = false,
+                        // An uninstalled source is permanent; a network failure is not.
+                        // Collapsing them would show "unavailable" for a title that loads fine
+                        // next time.
+                        error = error.toUserMessage(),
+                    )
+                }
+        }
+    }
+
+    /**
+     * Handles a unit tap.
+     *
+     * Navigate with the saved unit identity. The player resolves fresh streams exactly once
+     * when it opens, and owns retry; resolving here too doubles source requests and startup time.
+     */
+    fun onUnitClick(
+        unit: SourceUnit,
+        onNavigateToUnit: (Int) -> Unit,
+        onPlay: (SourceUnit, List<StreamTarget>) -> Unit,
+    ) {
+        // Manga and anime are transient-safe: units are fetch-only and preview
+        // reader/player work off PreviewDetail with no persisted row, so unsaved
+        // preview taps navigate without upserting. Music still requires Save.
+        if (_state.value.isPreview && !_state.value.isSaved) {
+            val transient = previewEntry ?: return
+            if (transient.mediaType == MediaType.MUSIC) return
+            if (transient.mediaType == MediaType.MANGA) {
+                onNavigateToUnit(unit.index)
+                return
+            }
+            onPlay(unit, emptyList())
+            return
+        }
+        val entry = currentEntry ?: return
+
+        if (entry.mediaType == MediaType.MANGA) {
+            onNavigateToUnit(unit.index)
+            return
+        }
+
+        onPlay(unit, emptyList())
+    }
+
+    /** User-triggered retry for both Kitsu and the extension. */
+    fun retry() {
+        if (_state.value.isPreview) {
+            previewEntry?.let { loadSeasons(it) }
+            fetchPreviewMetadata()
+            refreshPreviewUnits()
+            return
+        }
+        currentEntry?.let { entry ->
+            loadSeasons(entry)
+            if ((entry.kitsuId == null || entry.kitsuRating == null) && entry.mediaType != MediaType.MUSIC) {
+                identifyIfNeeded(entry)
+            } else if (_state.value.englishTitle == null && entry.mediaType != MediaType.MUSIC) {
+                fetchSavedEnglishTitle(entry)
+            }
+        }
+        refreshUnits()
+    }
+
+    fun consumeMessage() {
+        _state.value = _state.value.copy(message = null)
+    }
+
+    /**
+     * Projects a Room row plus its units onto screen state, without clobbering in-flight flags.
+     *
+     * The transient flags are preserved deliberately: a units refresh writes to Room, which
+     * re-emits here, and clearing `isResolvingStream` on that emission would hide the spinner
+     * for a *different* operation that may still be running.
+     */
+    private fun MediaDetailUiState.withEntry(
+        entry: LibraryEntryEntity,
+        units: List<LibraryUnitEntity>,
+    ) = copy(
+        // englishTitle is deliberately not projected: no persisted column holds it, so the
+        // fetch-only value on state survives Room re-emissions.
+        mediaType = entry.mediaType,
+        title = entry.title,
+        originalTitle = entry.kitsuOriginalTitle,
+        synopsis = entry.description,
+        posterUrl = entry.artworkUrl,
+        coverUrl = entry.kitsuCoverUrl,
+        genres = entry.genres,
+        averageRating = entry.kitsuRating,
+        status = entry.status.name,
+        totalUnits = entry.totalUnits.takeIf { it > 0 },
+        currentUnitIndex = entry.currentUnitIndex,
+        entryProgress = entry.progress,
+        units = units.map { it.toSourceUnit() },
+        watchedUnitIndices = units.filter { it.isWatched }.map { it.unitIndex }.toSet(),
+        // The spinner follows whether we are still waiting, so an unrelated Room emission (a
+        // progress write, say) cannot re-arm or prematurely clear it.
+        isMetadataLoading = entry.kitsuId == null && !identificationDone,
+        metadataUnavailable = metadataUnavailable,
+        error = error,
+        // Saved route: the row exists by definition. Derive saved state from it so
+        // re-opening a saved title still reports saved (state-backed, survives re-entry).
+        isSaved = true,
+        savedEntryId = entry.id,
+        message = "Saved to Library ✓",
+    )
+
+    /** Room rows store the source-relative id; the screen needs the display shape. */
+    private fun LibraryUnitEntity.toSourceUnit() = SourceUnit(
+        // Nullable in Room (a unit can exist before its source id is known), but the screen needs
+        // a value. A blank id is inert: the extension will simply fail to match it, which is
+        // better than a crash or a silent row that does nothing when tapped.
+        url = sourceUnitId.orEmpty(),
+        index = unitIndex,
+        title = title,
+        thumbnailUrl = thumbnailUrl,
+        uploadTimestamp = 0L,
+        isWatched = isWatched,
+        watchPositionMs = lastPositionMs,
+        watchDurationMs = durationMs,
+    )
+
+    private fun Throwable.toUserMessage(): String =
+        if (this is ExtensionContentRepository.UnavailableException) {
+            "The extension providing this content is not installed"
+        } else {
+            "Could not reach the source. Check your connection and try again."
+        }
+
+    private class Factory(
+        private val entryId: String,
+        private val libraryRepository: LibraryRepository,
+        private val identifier: KitsuIdentifier,
+        private val contentRepository: ExtensionContentRepository,
+        private val preview: PreviewDetail? = null,
+    ) : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            MediaDetailViewModel(entryId, libraryRepository, identifier, contentRepository, preview) as T
+    }
+
+    companion object {
+        fun factory(
+            entryId: String,
+            libraryRepository: LibraryRepository,
+            identifier: KitsuIdentifier,
+            contentRepository: ExtensionContentRepository,
+        ): ViewModelProvider.Factory =
+            Factory(entryId, libraryRepository, identifier, contentRepository)
+
+        fun previewFactory(
+            preview: PreviewDetail,
+            libraryRepository: LibraryRepository,
+            identifier: KitsuIdentifier,
+            contentRepository: ExtensionContentRepository,
+        ): ViewModelProvider.Factory =
+            Factory("", libraryRepository, identifier, contentRepository, preview)
+    }
+}

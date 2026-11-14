@@ -1,0 +1,739 @@
+package com.auris.app.ui.extensions
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import com.auris.app.R
+import com.auris.app.source.repo.ExtensionListItem
+import com.auris.app.source.repo.InstallProgress
+import com.auris.app.source.repo.ExtensionRepo
+import com.auris.app.ui.components.ErrorBanner
+import com.auris.app.ui.components.SectionHeader
+import com.auris.app.ui.components.SkeletonListRows
+import com.auris.app.ui.components.SlowNetworkHint
+import com.auris.app.ui.components.StateEmpty
+import com.auris.app.ui.components.StateError
+import com.auris.app.ui.components.StateNoResults
+import com.auris.app.ui.components.SuccessBanner
+import com.auris.app.ui.theme.ArtworkGradientBackground
+import com.auris.app.ui.theme.ArtworkPalette
+import com.auris.app.ui.theme.AurisAccent
+import com.auris.app.ui.theme.AurisBackground
+import com.auris.app.ui.theme.AurisOnSurface
+import com.auris.app.ui.theme.AurisOnSurfaceVariant
+import com.auris.app.ui.theme.AurisOutline
+import com.auris.app.ui.theme.AurisRadii
+import com.auris.app.ui.theme.AurisSurface
+import com.auris.app.ui.theme.AurisTrack
+import com.auris.app.ui.theme.GlassEdge
+import com.auris.app.ui.theme.GlassFill
+import com.auris.app.ui.theme.rememberArtworkPaletteValue
+import kotlin.math.roundToInt
+
+/**
+ * Extension management: browse a repository, install, remove, enable/disable.
+ *
+ * ### Design rules honoured here
+ *  - **Dynamic background** — the artwork gradient follows the icon of the most recently
+ *    interacted-with extension, exactly as the player follows the album art.
+ *  - **Large rounded corners** — rows use the same `AurisRadii.artwork` as every other card.
+ *  - **Floating navigation** — this screen is reached from Settings, not a top-level tab, so it
+ *    draws no bottom pill and instead reserves [bottomPadding] for the system inset.
+ */
+@Composable
+fun ExtensionsScreen(
+    state: ExtensionsUiState,
+    actions: ExtensionsUiActions,
+    modifier: Modifier = Modifier,
+    repo: ExtensionRepo = ExtensionRepo.DEFAULT,
+    onOpenSettings: () -> Unit = {},
+    /** Browses an installed source's catalogue; the only path from installed to browsable. */
+    onOpenCatalogue: (String) -> Unit = {},
+    /** Returns to Settings; this screen draws no nav pill, so it needs an on-screen back. */
+    onBack: () -> Unit = {},
+    bottomPadding: androidx.compose.ui.unit.Dp = 32.dp,
+) {
+    state.pendingTrust?.let { request ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { actions.onConfirmTrust(false) },
+            title = { androidx.compose.material3.Text("Trust this extension publisher?") },
+            text = { androidx.compose.material3.Text(
+                "No trusted publisher key is configured for ${request.packageName}. " +
+                    "This extension can access Auris data and session state. Verify this signing fingerprint " +
+                    "through a trusted source before continuing:\n\n${request.fingerprint}"
+            ) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { actions.onConfirmTrust(true) }) {
+                    androidx.compose.material3.Text("Trust and install")
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { actions.onConfirmTrust(false) }) {
+                    androidx.compose.material3.Text("Cancel")
+                }
+            },
+        )
+    }
+    // The gradient tracks whichever icon the user last touched, so the header carries a colour.
+    val palette = rememberArtworkPaletteValue(artworkKey = state.focusIconKey)
+
+    ArtworkGradientBackground(
+        palette = palette,
+        intensity = 0.9f,
+        modifier = modifier,
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 20.dp,
+                end = 20.dp,
+                top = 56.dp,
+                bottom = bottomPadding,
+            ),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            item(key = "header") {
+                ExtensionsHeader(
+                    repo = repo,
+                    extensions = state.total,
+                    installed = state.installed,
+                    updates = state.updates,
+                    isLoading = state.isLoading,
+                    isNsfwVisible = state.showNsfw,
+                    onToggleNsfw = actions.onToggleNsfw,
+                    onRefresh = actions.onRefresh,
+                    onEditRepo = actions.onEditRepo,
+                    onOpenSettings = onOpenSettings,
+                    onOpenCatalogue = onOpenCatalogue,
+                    onBack = onBack,
+                )
+            }
+
+            if (state.error != null) {
+                item(key = "error") { RepoErrorCard(state.error, actions.onRetry) }
+            }
+
+            state.message?.let { message ->
+                item(key = "message") {
+                    if (state.isMessageError) {
+                        ErrorBanner(message)
+                    } else {
+                        SuccessBanner(message)
+                    }
+                }
+            }
+
+            item(key = "search") {
+                ExtensionSearchField(
+                    query = state.query,
+                    onQueryChange = actions.onQueryChange,
+                )
+            }
+
+            if (state.isLoading && state.items.isEmpty() && state.error == null) {
+                item(key = "loading") {
+                    Column {
+                        SkeletonListRows(
+                            count = 4,
+                            thumbnailSize = 44.dp,
+                            thumbnailShape = RoundedCornerShape(AurisRadii.artworkSmall),
+                        )
+                        SlowNetworkHint(isLoading = true)
+                    }
+                }
+            }
+
+            if (!state.isLoading && state.items.isEmpty() && state.error == null) {
+                if (state.query.isBlank()) {
+                    item(key = "empty") { EmptyCatalog(repo, actions.onRefresh) }
+                } else {
+                    item(key = "no-match") {
+                        NoMatchCard(state.query, onClear = { actions.onQueryChange("") })
+                    }
+                }
+            }
+
+            val visible = state.items.take(state.visibleCount)
+            items(visible, key = { it.remote.packageName }) { item ->
+                ExtensionRow(
+                    item = item,
+                    // A blank key means "no advertised sources" and the NavHost
+                    // drops it, so such a row stays inert instead of opening a
+                    // catalogue that could never resolve.
+                    onBrowse = { onOpenCatalogue(item.catalogueKey.orEmpty()) },
+                    stage = state.progress[item.remote.packageName],
+                    onInstall = { actions.onInstall(item) },
+                    onUninstall = { actions.onUninstall(item) },
+                    onToggle = { actions.onSetEnabled(item, it) },
+                    onFocus = { actions.onFocus(item) },
+                )
+            }
+
+            if (state.visibleCount < state.items.size) {
+                item(key = "load-more") {
+                    LoadMoreFooter(
+                        shown = visible.size,
+                        total = state.items.size,
+                        onLoadMore = actions.onLoadMore,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ---- Header ------------------------------------------------------------------
+
+@Composable
+private fun ExtensionsHeader(
+    repo: ExtensionRepo,
+    extensions: Int,
+    installed: Int,
+    updates: Int,
+    isLoading: Boolean,
+    isNsfwVisible: Boolean,
+    onToggleNsfw: (Boolean) -> Unit,
+    onRefresh: () -> Unit,
+    onEditRepo: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenCatalogue: (String) -> Unit,
+    onBack: () -> Unit,
+) {
+    Column {
+        // Nav row: back on the left, the actions on the right, so the title below owns the full
+        // width. Side-packing the title between the back button and three 44dp actions left it
+        // ~108dp and wrapped "Extensions" onto two lines.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            HeaderIconButton(
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back",
+                onClick = onBack,
+            )
+            Spacer(Modifier.weight(1f))
+            HeaderIconButton(
+                icon = Icons.Filled.Refresh,
+                contentDescription = "Refresh",
+                onClick = onRefresh,
+                enabled = !isLoading,
+            )
+            Spacer(Modifier.width(8.dp))
+            HeaderIconButton(
+                icon = Icons.Filled.CloudDownload,
+                contentDescription = "Change repository",
+                onClick = onEditRepo,
+            )
+            Spacer(Modifier.width(8.dp))
+            // This pointed at Diagnostics only because Settings did not exist. It now opens
+            // Settings, which is where Diagnostics lives — and which also carries the signature
+            // state for the extensions listed directly below it.
+            HeaderIconButton(
+                icon = Icons.Filled.Settings,
+                contentDescription = "Settings",
+                onClick = onOpenSettings,
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Text(
+            text = "Extensions",
+            style = MaterialTheme.typography.headlineMedium,
+            color = AurisOnSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = if (isLoading) {
+                "Loading ${repo.shortName ?: repo.name}…"
+            } else {
+                "$installed of $extensions installed" +
+                    if (updates > 0) " · $updates update${if (updates == 1) "" else "s"}" else ""
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = AurisOnSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(14.dp))
+
+        // Source-count filter row: rounded chips, matching the app's chip radius.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                label = "All",
+                selected = isNsfwVisible,
+                onClick = { onToggleNsfw(!isNsfwVisible) },
+            )
+            FilterChip(
+                label = "Installed",
+                selected = false,
+                onClick = { },
+            )
+            FilterChip(
+                label = "Updates",
+                selected = false,
+                onClick = { },
+                badge = updates.takeIf { it > 0 },
+            )
+        }
+
+        Spacer(Modifier.height(4.dp))
+
+        // Certificate pins protect updates; initial unkeyed installs require explicit trust.
+        Text(
+            text = "Extensions run with Auris permissions. Publisher keys are checked when configured; unkeyed first installs require your trust.",
+            style = MaterialTheme.typography.labelMedium,
+            color = AurisOnSurfaceVariant.copy(alpha = 0.75f),
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+}
+
+@Composable
+private fun HeaderIconButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(AurisSurface)
+            .clickable(
+                enabled = enabled,
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = if (enabled) AurisOnSurface else AurisOnSurfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
+@Composable
+private fun FilterChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    badge: Int? = null,
+) {
+    Surface(
+        shape = RoundedCornerShape(AurisRadii.chip),
+        color = if (selected) AurisAccent.copy(alpha = 0.18f) else AurisTrack,
+        modifier = Modifier.clickable(
+            indication = null,
+            interactionSource = remember { MutableInteractionSource() },
+            onClick = onClick,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (selected) AurisAccent else AurisOnSurfaceVariant,
+            )
+            if (badge != null) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = badge.toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = AurisAccent,
+                )
+            }
+        }
+    }
+}
+
+// ---- Row ---------------------------------------------------------------------
+
+@Composable
+private fun ExtensionRow(
+    item: ExtensionListItem,
+    stage: InstallProgress.Stage?,
+    onInstall: () -> Unit,
+    onUninstall: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+    onFocus: () -> Unit,
+    onBrowse: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(AurisRadii.artwork),
+        color = GlassFill,
+        border = BorderStroke(1.dp, GlassEdge),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        // Two lines: the title gets the full row width — extension names are long
+        // and a side-packed title truncates mid-word on phones — with the icon,
+        // version and actions sharing the second line.
+        Column(
+            modifier = Modifier.padding(14.dp),
+        ) {
+            // The title is the entry point into the catalogue. The install/uninstall button
+            // and the enable toggle remain separate, because tapping a name to install would be
+            // surprising, and a disabled source still has a browsable catalogue once re-enabled.
+            val canBrowse = item.installed != null
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                LangBadge(item.remote.lang)
+
+                Spacer(Modifier.width(10.dp))
+
+                Text(
+                    text = item.shortName,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (canBrowse) AurisOnSurface else AurisOnSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .then(
+                            if (canBrowse) {
+                                Modifier.clickable(onClick = onBrowse)
+                            } else {
+                                Modifier
+                            },
+                        ),
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Extension icon, using the same large corner radius as every artwork surface.
+                AsyncImage(
+                    model = item.iconUrl,
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(AurisRadii.artworkSmall))
+                        .background(AurisTrack),
+                )
+
+                Spacer(Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = buildString {
+                            append(item.remote.versionName)
+                            if (item.isInstalled) {
+                                append(" · installed ")
+                                append(item.installed?.versionName.orEmpty())
+                            }
+                            append(" · ${item.remote.sourceCount} ")
+                            append(if (item.remote.sourceCount == 1) "source" else "sources")
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = AurisOnSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+
+                    if (item.remote.isNsfw) {
+                        Spacer(Modifier.height(4.dp))
+                        NsfwTag()
+                    }
+                }
+
+                Spacer(Modifier.width(10.dp))
+
+                when {
+                stage == InstallProgress.Stage.DOWNLOADING ||
+                    stage == InstallProgress.Stage.INSTALLING ->
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.5.dp,
+                        color = AurisAccent,
+                    )
+
+                stage == InstallProgress.Stage.FAILED ->
+                    Icon(
+                        Icons.Filled.ErrorOutline,
+                        contentDescription = "Install failed",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(24.dp),
+                    )
+
+                item.isInstalled -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (item.hasUpdate) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = "Update available",
+                            tint = AurisAccent,
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clickable(
+                                    indication = null,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    onClick = onInstall,
+                                ),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "Uninstall",
+                        tint = AurisOnSurfaceVariant,
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clickable(
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() },
+                                onClick = onUninstall,
+                            ),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Switch(
+                        checked = item.isEnabled,
+                        onCheckedChange = onToggle,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = AurisBackground,
+                            checkedTrackColor = AurisAccent,
+                            uncheckedThumbColor = AurisOnSurfaceVariant,
+                            uncheckedTrackColor = AurisTrack,
+                            uncheckedBorderColor = AurisOutline,
+                        ),
+                    )
+                }
+
+                else -> InstallButton(
+                    label = if (item.hasUpdate) "Update" else "Install",
+                    onClick = {
+                        onFocus()
+                        onInstall()
+                    },
+                )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InstallButton(label: String, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(AurisRadii.button),
+        color = AurisAccent,
+        modifier = Modifier.clickable(
+            indication = null,
+            interactionSource = remember { MutableInteractionSource() },
+            onClick = onClick,
+        ),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = AurisBackground,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+        )
+    }
+}
+
+/** Language tag: the fastest way to tell same-named extensions apart. */
+@Composable
+private fun LangBadge(lang: String) {
+    Surface(shape = RoundedCornerShape(AurisRadii.chip), color = AurisTrack) {
+        Text(
+            text = lang.uppercase().take(3),
+            style = MaterialTheme.typography.labelMedium,
+            color = AurisAccent,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun NsfwTag() {
+    Surface(shape = RoundedCornerShape(AurisRadii.chip), color = AurisTrack) {
+        Text(
+            text = "18+",
+            style = MaterialTheme.typography.labelMedium,
+            color = AurisOnSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun ExtensionSearchField(query: String, onQueryChange: (String) -> Unit) {
+    // Cursor pinned to the end: the state is re-created on every query change,
+    // and the default selection (start) would prepend each keystroke, reversing
+    // the input. Mid-text edits lose their position — acceptable for a filter.
+    var field by remember(query) {
+        mutableStateOf(
+            androidx.compose.ui.text.input.TextFieldValue(query, TextRange(query.length))
+        )
+    }
+
+    Surface(
+        shape = RoundedCornerShape(AurisRadii.button),
+        color = AurisSurface,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Search,
+                contentDescription = null,
+                tint = AurisOnSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+
+            Box(Modifier.weight(1f)) {
+                if (field.text.isEmpty()) {
+                    Text(
+                        // Matches name, package name and language in the ViewModel.
+                        text = "Search extensions",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = AurisOnSurfaceVariant,
+                    )
+                }
+                BasicTextField(
+                    value = field,
+                    onValueChange = { value ->
+                        field = value
+                        onQueryChange(value.text)
+                    },
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        color = AurisOnSurface,
+                        fontSize = MaterialTheme.typography.bodyLarge.fontSize,
+                    ),
+                    cursorBrush = SolidColor(AurisAccent),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            if (field.text.isNotEmpty()) {
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Clear",
+                    tint = AurisOnSurfaceVariant,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .clickable {
+                            field = androidx.compose.ui.text.input.TextFieldValue("")
+                            onQueryChange("")
+                        },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LoadMoreFooter(shown: Int, total: Int, onLoadMore: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = "Showing $shown of $total",
+            style = MaterialTheme.typography.labelMedium,
+            color = AurisOnSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        InstallButton("Show more", onLoadMore)
+    }
+}
+
+@Composable
+private fun NoMatchCard(query: String, onClear: () -> Unit) {
+    StateNoResults(
+        query = query,
+        description = "Try a package name or language code instead.",
+        onClear = onClear,
+    )
+}
+
+// ---- States ------------------------------------------------------------------
+
+@Composable
+private fun RepoErrorCard(message: String, onRetry: () -> Unit) {
+    StateError(
+        title = "Could not read the repository",
+        description = message,
+        onRetry = onRetry,
+    )
+}
+
+@Composable
+private fun EmptyCatalog(repo: ExtensionRepo, onRefresh: () -> Unit) {
+    StateEmpty(
+        title = "No extensions found",
+        description = "${repo.name} returned no usable entries. Check the repository URL in " +
+            "Settings, or refresh in a moment.",
+        actionLabel = "Refresh",
+        onAction = onRefresh,
+    )
+}

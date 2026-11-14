@@ -1,0 +1,631 @@
+# Auris — Architecture Handover
+
+Everything here reflects verified behaviour at commit `3e97555`. Where something is **not**
+working, it says so plainly rather than describing intent.
+
+---
+
+## 1. Room database schema
+
+Single source of truth. The UI observes Flows; WorkManager pushes to Supabase when online. Current
+version **4**. Exported schemas live in `app/schemas/` and are committed deliberately —
+`MigrationTestHelper` reads them from androidTest assets.
+
+### `library_entries` — one row per title
+
+Unifies anime, manga and music so progress looks identical across pillars.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | TEXT PK | Local identity, not the remote's |
+| `remote_id` | TEXT | The source's own id, scoped by `source_id` |
+| `source_id` / `source_key` | TEXT | Extension package / provider key |
+| `media_type` | TEXT | `ANIME` / `MANGA` / `MUSIC` |
+| `kitsu_id`, `kitsu_slug` | TEXT? | Set by `KitsuIdentifier`; present since v1 |
+| `kitsu_cover_url` | TEXT? | Wide 4.2:1 art, distinct from the 3:4 `artwork_url` |
+| `kitsu_original_title` | TEXT? | Source-language title |
+| `kitsu_rating` | REAL? | 0.0–100.0 |
+| `artwork_url` / `local_artwork_path` | TEXT? | Remote poster vs cached file |
+| `genres`, `categories` | TEXT | Comma-joined, `NOT NULL` |
+| `progress`, `score` | REAL, INTEGER | |
+| `total_units`, `current_unit_index` | INTEGER | **1-based** — see below |
+| `status`, `sync_state` | TEXT | Enum, stored by name |
+| `is_deleted`, `is_favorite` | INTEGER | Boolean-as-int |
+| `last_position_ms` | INTEGER | Resume position |
+| timestamps | INTEGER | `created_at`, `updated_at`, `last_activity_at`, `remote_updated_at` |
+
+**`current_unit_index` is 1-based.** An album at track 2 of 5 therefore shows 40%, exactly as an
+anime at episode 2 of 5 does. That is the whole reason the music pillar can share this table.
+
+### `library_units` — episodes / chapters / tracks
+
+Composite key `(entry_id, unit_index)`. Carries `source_unit_id`, `title`, `thumbnail_url`,
+`duration_ms`, `is_watched`, `last_position_ms`, `bookmark`.
+
+> **`stream_url` is never persisted for music.** InnerTube URLs carry `expiresInSeconds` of roughly
+> six hours, so storing one guarantees a 403 on the next play. The unit keeps only the video id and
+> the player re-resolves per playback.
+
+### `sync_outbox`, `sync_sessions`
+
+`sync_outbox` is pending work with `dedupe_key` — losing it means a change silently never reaches
+Supabase, so migration tests assert rows survive. `sync_sessions` holds the Supabase token pair.
+
+### `installed_extensions`
+
+`signature_hash` (SHA-256 of the **APK file**) and `signing_cert_fingerprint` (SHA-256 of the
+**signing certificate**) are deliberately **separate columns**. The file hash proves the bytes did
+not change; it is computed by whoever supplies the file, so it cannot prove who signed them.
+Overwriting one with the other would destroy a check while appearing to add a security property.
+
+### Migrations
+
+`MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4`, all in `Migrations.ALL`, none destructive.
+`MigrationsTest` deletes the database file in `@Before` so the suite is order-independent — another
+suite opening the app's real database otherwise breaks whichever test runs next.
+
+> **Type converters must never throw.** All three enums fall back to the first constant on an
+> unknown value. `valueOf` throwing while Room is *reading* propagates out of the observing
+> coroutine and kills the process: an enum rename made the app unlaunchable until app data was
+> cleared. An enum name in SQLite is an external contract that outlives the code that wrote it.
+
+---
+
+## 2. ExoPlayer lifecycle
+
+### Episode player — rebuilt **per episode**
+
+`EpisodePlayer` constructs a fresh `ExoPlayer` per episode rather than reusing one. media3 has no
+per-item HTTP header API and `ExoPlayer` has no `setMediaSourceFactory`. A single player carrying
+global headers would send episode A's credentials to episode B's host. This is a deliberate
+security decision, not an oversight.
+
+Released when the route is popped. `setWakeMode(C.WAKE_MODE_NETWORK)` keeps the CPU awake across a
+track without preventing sleep between tracks.
+
+### Music player — `MusicPlaybackService`
+
+A media3 `MediaSessionService`, so playback survives the Activity and reaches the notification
+shade, lock screen and system media controls.
+
+## 3. MediaSessionService constraints
+
+- **Audio focus is mandatory.** `AudioAttributes` with `USAGE_MEDIA` / `CONTENT_TYPE_MUSIC` and
+  `setAudioFocus(true)`. Without it ExoPlayer does not request focus and a phone call talks over
+  the music instead of ducking it.
+- **`setHandleAudioBecomingNoisy(true)`** — pauses on headphone unplug. The single most reported
+  music-app bug.
+- **Release in `onDestroy`, never `onUnbind`.** Unbind happens on every rotation.
+- **`onTaskRemoved` does not stop playing music.** Swiping the app away should not kill playback;
+  it stops only when idle.
+- **`foregroundServiceType="mediaPlayback"`** plus the matching permission, required from Android 14.
+- **The notification comes from `DefaultMediaNotificationProvider`.** Hand-rolling transport
+  pending-intents means targeting `SessionCommands` constants that **moved between media3
+  releases** — the first attempt failed to compile against 1.5.1 exactly that way, and the failure
+  mode of getting it subtly wrong is a notification whose buttons silently do nothing. Only the
+  channel id is app-owned, and it is stable so upgrades keep user preferences.
+
+---
+
+## 4. BotGuard and the `/player` wall
+
+**Music playback does not work and cannot until stream resolution is solved.**
+
+`/player` returns `UNPLAYABLE` with an empty `adaptiveFormats` for every unauthenticated client
+tested live: `WEB_REMIX` and `ANDROID_MUSIC` (200 + `UNPLAYABLE`/`LOGIN_REQUIRED`), and
+`FAILED_PRECONDITION` for `WEB`, `MWEB`, `IOS`, `TVHTML5_SIMPLY_EMBEDDED_PLAYER`,
+`WEB_EMBEDDED_PLAYER`, `ANDROID_VR`. Passing a genuine `visitorData` did not help, so this is not a
+missing header.
+
+Per the yt-dlp PO Token Guide (July 2026), PO tokens are now **bound to the video id** — one per
+track. That reading was tested directly (see *Verified 2026-10*): attestation is achievable, but it
+is **not** the gate, and minting a valid token changes nothing.
+
+The app reports this honestly: `YouTube declined to serve audio for "…" (UNPLAYABLE)`, not
+"Nothing playable", which would point the user at a track that is fine. `StreamRefusal` separates a
+per-track condition (`private`, `removed`, region-blocked) from a request-level refusal, because
+only the first is fixed by choosing a different song.
+
+Browse, search, metadata and library all work. Only audio does not.
+
+### Verified 2026-10: a PO token is **not** sufficient
+
+The "BotGuard is the blocker" reading of this wall was tested end-to-end, and it is **wrong**.
+Using only permissively-licensed pieces — `bgutils-js` (**MIT**) for the VM orchestration, and
+Google's own BotGuard interpreter, fetched at runtime — a complete attestation was performed in a
+real JS environment:
+
+| Step | Result |
+| --- | --- |
+| `POST /youtubei/v1/att/get` (`WEB`, `ENGAGEMENT_TYPE_UNBOUND`) | 200 — `bgChallenge` (interpreter URL, ~36 KB bytecode program, `globalName`) |
+| Load interpreter, run `vm.a(program, …)` | OK — `asyncSnapshotFunction` obtained |
+| `asyncSnapshotFunction(…)` | OK — BotGuard response (~4.4 KB) **and** a signal-output function |
+| `Waa/GenerateIT` | 200 — integrity token, TTL 43200 s |
+| `WebPoMinter.mint(videoId)` | OK — **128-char PO token** (and a 176-char visitor-bound variant) |
+
+With that genuine token attached, `/player` was called for **9 client identities × 4 token
+placements** (none / `serviceIntegrityDimensions.poToken` / visitor-bound token / `params`), and
+then again for **3 videos × 2 hosts × 4 clients**. **Every single call returned zero formats and
+an empty `adaptiveFormats`**:
+
+| Client | Result with a valid PO token |
+| --- | --- |
+| `WEB_REMIX`, `WEB`, `MWEB`, `TVHTML5` | `UNPLAYABLE` |
+| `ANDROID_MUSIC` | `LOGIN_REQUIRED` — "Please sign in" |
+| `ANDROID_VR` | `LOGIN_REQUIRED` — "Sign in to confirm you're not a bot" |
+| `TVHTML5_SIMPLY_EMBEDDED_PLAYER` | `ERROR` — "YouTube is no longer supported in this application or device" |
+| `WEB_EMBEDDED_PLAYER` | `ERROR` |
+
+`videoDetails.title` was served throughout, so the requests were well-formed and the videos were
+known to YouTube. So attestation is **achievable** — the doc's earlier "cannot" was wrong — but it
+is **not sufficient**. The gate that remains is a signed-in account, which is exactly why every
+large third-party client (e.g. ArchiveTune) solves this by *authenticating* rather than bypassing.
+
+**The datacenter-IP hypothesis has been tested and is false.** The same probe was re-run from the
+handset itself, on a residential network (Wi-Fi behind a home router, `192.168.1.4`), and the
+answers were **identical to the server's**:
+
+| Client | On the handset, residential IP |
+| --- | --- |
+| `WEB_REMIX` | `UNPLAYABLE` — "Video unavailable" |
+| `WEB` | `UNPLAYABLE` — "Video unavailable" |
+| `MWEB` | `UNPLAYABLE` — "The page needs to be reloaded." |
+| `ANDROID_MUSIC` | `LOGIN_REQUIRED` — **"Please sign in"** |
+| `TVHTML5_SIMPLY_EMBEDDED_PLAYER` | `ERROR` — "YouTube is no longer supported in this application or device." |
+| `WEB_EMBEDDED_PLAYER` | `ERROR` — "This video is unavailable" |
+
+`title` came back on the web clients throughout, so the requests were well-formed and the videos
+were known. The wall is therefore neither IP reputation nor attestation: **it is the account, on
+any network.** The route is closed, and no further resolution code is justified.
+
+*(`ANDROID` and `IOS` answered HTTP 400 in that run — the probe's client context for those two is
+incomplete. That is a defect in the probe, not a finding: neither could overturn the result when
+`ANDROID_MUSIC`, the closest identity, states the gate outright.)*
+
+An important consequence: because attestation was never the gate, the cipher/deobfuscation
+subsystem (signature + `n` transform) was never built — and must not be. A `signatureCipher` only
+needs deobfuscating after `/player` has decided to serve one, and it never does.
+
+### Decision: stream through a public Invidious instance, behind a seam
+
+> **Superseded 2026-10-21** — the instance is now the *fallback*; on-device extraction is primary.
+> See *Reversal: on-device extraction becomes primary* below. The reasoning here is kept because
+> it is the record of why the first-party route was closed and what the proxy actually cost.
+
+**Status: chosen 2026-10.** The *first-party* route — Auris talking to YouTube's own InnerTube
+endpoints — is **closed**, and stays closed; the evidence is in *Verified 2026-10* above. What
+remains is a **proxied** route: a public [Invidious](https://invidious.io) instance, which solves
+the attestation we could not (server-side) and hands back a plain audio URL.
+
+**Licensing — and why this is not the GPL problem again.** Invidious is **AGPL-3.0**, but Auris
+consumes its **HTTP API** and nothing else. Consuming a network service is not creating a
+derivative work, and AGPL §13 binds whoever *operates* the server, not the client — so consuming
+the API imposes nothing on the client's licence. The one rule this imposes: **do not copy
+Invidious source into this tree.** NewPipeExtractor is the opposite case — a library linked into
+the APK — and that is a decision in its own right; see the reversal below.
+
+**Technical — verified 2026-10, end to end:**
+
+| Step | Result |
+| --- | --- |
+| `GET /api/v1/videos/{id}` on `invidious.f5.si` | HTTP 200, 26 adaptive formats, direct `googlevideo.com` URLs |
+| Ranged GET on the returned audio URL | HTTP 206, the **full 1,628,559-byte track** at 2.4 MB/s |
+| That request began as a `302` | A CDN node redirect, not an IP lock — following it delivers real Opus |
+| The same probe from the **handset**, on its own network | `invidious.f5.si http=200 audio=4 forms=27 stream=206/65536` — 64 KiB of real audio arrived on the device. `inv.nadeko.net 403 "Endpoint disabled"`, `invidious.nerdvpn.de 401` |
+
+The last row is the one that decides it. A datacenter success has been misleading twice on this
+project, so the route was only treated as real once a phone on a residential network pulled bytes.
+An `Invidious playback probe` in **Settings → Diagnostics** re-runs that check on demand.
+
+
+So the catalogue is genuine YouTube Music, **no account is involved**, and the circumvention
+happens on the instance rather than in this app.
+
+**The cost, which is real.** Of 11 instances listed, **exactly one** has its API open; the rest
+answer `403 Endpoint disabled`, `401`, or `forbidden`. The trend is instances *closing* their
+APIs. This route therefore depends on **a single volunteer's server**, and one that closes or
+dies takes playback with it. That is precisely why the client is not built against an instance
+but against a **configurable, health-checked list with failover and a resolved-URL cache** — so a
+dead instance is a settings change rather than a broken app. Auris remains strictly client-side;
+no self-hosted server is required or assumed.
+
+**Terms of service.** Still unofficial access to YouTube, but the circumvention is the instance
+operator's, not ours — and materially different from the JioSaavn-proxy route that was declined,
+which redistributed a *paid* catalogue. Invidious is a free-software front end for publicly
+viewable videos.
+
+### Reversal (2026-10-21): on-device extraction becomes primary
+
+Two things changed the decision above.
+
+**The instance does not descramble reliably.** Measured on the handset: **3 of 8** tracks played,
+4 resolved to URLs that every attempt refused with `403`, and 1 did not resolve at all. The split
+is per video and stable — the signature of an `n`-parameter descrambler lagging YouTube's player
+script. No client change repairs that.
+
+**NewPipeExtractor does descramble, on the device.** It runs YouTube's current player script
+through Rhino and signs the URLs itself, so the result is addressed to this device's egress.
+
+| Check (2026-10-21) | Result |
+| --- | --- |
+| `StreamInfo.getInfo` for `Zx31bB2vMns` | 5 audio streams (AAC + Opus), full metadata |
+| Ranged GET on the 128 kbps AAC URL, build machine | `206`, 1 KiB |
+| Same extraction on the handset | `AurisMusic: resolved Zx31bB2vMns via NewPipe (audio/mp4)` |
+| Playback | `PLAYING`, position advancing, buffer ahead, no `ExoPlaybackException` |
+| `VZZA_38RUBI` and `Li89QVWmqTk` (refused/unresolved on the instance) | resolved and played |
+
+**Version matters, and this is the maintenance cost.** 0.26.1 returned **zero** audio streams for
+the same video: it is not merely old, it is broken against current YouTube. 0.26.5 is the first
+release verified to extract and is pinned in `app/build.gradle.kts`. A future YouTube change may
+need a newer pin; the extractor is a moving target in a way an HTTP API is not.
+
+**The licence, accepted deliberately.** NewPipeExtractor is **GPL-3.0-or-later**, and linking it
+makes the whole app GPL-3.0-or-later — `LICENSE` now says so. This was accepted because the app is
+an academic project that will not be developed after its presentation: the obligations attach to
+*conveying* the app, so private use is unrestricted, and the corresponding source that must
+accompany any distributed APK is this repository. The consequence is not hidden: **once
+distributed, the app cannot be relicensed closed-source** without every copyright holder's
+agreement. The extractor does not make YouTube's *service* licensed either; the ToS and
+anti-circumvention questions are unchanged by this decision.
+
+**Composition.** `FallbackStreamResolver(primary = NewPipeStreamResolver, secondary =
+InvidiousSource)` keeps the seam. The policy is narrower than "retry on failure":
+
+| Primary answer | Action |
+| --- | --- |
+| A playable stream | return it |
+| A **content** refusal (private, region-blocked, removed) | return it — another provider would either repeat it or find a copy the user was not meant to have |
+| [`StreamRefusalInfo.UNFETCHABLE`] (URL named, CDN refused) | try the secondary — this is a property of how the URL was minted, not of the track |
+| A failure (unreachable, rate-limited, API changed) | try the secondary |
+
+When both fail, a refusal from the primary is preferred over "no provider answered": it is an
+answer about the track, while the latter sends the user to Settings for a network problem that is
+not there. `FallbackStreamResolverTest` pins each row.
+
+### The seam, as built (2026-10)
+
+Two providers sit behind `MusicSource`, and **deliberately only one of them moved**:
+
+| Half | Provider | Why not the other |
+| --- | --- | --- |
+| **Catalogue** — search, albums, playlists | YouTube Music's own InnerTube API | Invidious search answers `type=video` and `type=channel` only (verified 2026-10): **no album rows**. Routing the catalogue through it would silently delete albums from every screen. |
+| **Audio** — the stream | NewPipeExtractor on the device, with public Invidious instances as fallback | InnerTube is refused outright for unauthenticated clients; the instance cannot descramble every track. Two routes, tried in that order, cover what neither does alone. |
+
+That split is the point. The fragile dependency — one volunteer's server — now carries only the
+tracks the on-device extractor could not reach. When every instance is down the user can still
+browse and still play; the alternative design couples the two and blacks out the whole pillar.
+
+- `MusicSource` (`data/remote/music/MusicSource.kt`) is the interface the UI depends on.
+  `MusicStreamResolver` is the narrower half that varies. `DefaultMusicSource` composes them.
+- `InvidiousSource` implements the resolver:
+  - **configurable list** — `InvidiousInstanceStore` (SharedPreferences, mirroring
+    `ExtensionRepoStore`), edited in **Settings → Music**. One instance is shipped
+    (`invidious.f5.si`), because a list of known-dead hosts is only slower than no list.
+  - **failover** — tried in configured order, with the instance list read *per track*, so a new
+    entry takes effect on the next song rather than the next launch.
+  - **health tracking** — an instance that fails is deprioritised for two minutes. It is
+    *deprioritised*, not banned: if nothing else is left it is tried again, because one extra round
+    trip beats refusing to play.
+  - **resolved-URL cache** — the general rule here is that stream URLs are never cached, since an
+    InnerTube URL expires in ~6 h and a stale one fails as a 403 that reads like a network error.
+    Invidious is different: its `googlevideo.com` URLs carry `expire=<unix seconds>` **in the URL
+    itself**, so `InvidiousParser` reads the real deadline and `AudioStream.isPlayable` enforces
+    it. What is cached is a URL with a *known* deadline — never an unexamined one.
+
+**A refusal about a track is not a failure of an instance.** An instance that is up answers HTTP
+200 with `{"error": ...}` when a video is gone. Treating that as an instance failure would bench a
+perfectly healthy host every time a user tapped a delisted track, so the two are separated:
+non-2xx retires the instance, a 200-with-error is returned as a `ResolvedAudio` refusal.
+
+### The failure modes this actually has (measured 2026-10)
+
+Two were found by running it, and neither was visible from the probe:
+
+1. **The instance rate-limits, unevenly.** Ten successive `/api/v1/videos` calls for the *same*
+   music video returned **five successes, then a run of `500`**, whose body is YouTube's
+   `This content isn't available, try again later.` The route works; its budget is roughly a
+   handful of calls before it needs to cool down.
+2. **The web UI sits behind Anubis** — a proof-of-work bot wall (`Making sure you're not a bot!`,
+   v1.28.1) that answers **every non-API path** with 7,070 bytes of HTML, including
+   `/vi/<id>/mqdefault.jpg`. `/api/v1/*` is exempt, which is why the API works at all. The
+   consequence is sharp: **every image URL the API hands back is unusable**, because those URLs
+   point at the Anubis-gated `/vi/` route.
+
+The second is fixed in code by not asking for images at all: artwork is **derived** from the video
+id (`youtubeThumbnailUrl` → `i.ytimg.com`, verified to return real JPEGs). That deleted
+`prefetchArtwork`, which had been warming twelve rows per catalogue load *through the resolver* —
+by measurement, exactly the burst that trips the limiter, so the user's own tap became the request
+that got throttled. Artwork was competing with playback for the only budget that matters.
+
+The methodological lesson is worth keeping, because this is the second time it has bitten: **a
+probe that succeeds on one ancient, heavily-cached video id is not evidence that the route works.**
+`dQw4w9WgXcQ` answered every single time while eight contemporary music videos answered `500`
+(`This content isn't available`) in the same minute.
+
+**Backend selection is host selection, not a parameter.** The web UI's
+`BACKEND: JP1 (Tokyo) | JP2 (Hokkaido)` maps to **separate hosts** — verified 2026-10:
+`jp2.invidious.f5.si` resolves and answers `/api/v1/stats`, `jp1.invidious.f5.si` does not resolve at
+all. So no new model is needed: a backend is just another entry in the instance list. The shipped
+default now leads with `jp2`, because it answers the API for music videos where the bare host
+returns `500` for **every** request (`Error while communicating with Invidious companion`).
+
+**Audio delivery works — from the handset, which is the only place that decides it.** The same
+instance, minutes apart, to two clients:
+
+| Client | Resolve | Audio bytes | Playback |
+| --- | --- | --- | --- |
+| Build machine (datacenter egress) | `200`, 4 audio formats | **`403`, 0 bytes, 0 of 3 attempts** | — |
+| Realme RMX3636 on its own network | `200`, 4 audio formats | **`200`** | `PLAYING`, position `11.9 → 14.9 → 21.0 s`, buffer ahead of position, no `ExoPlaybackException` |
+
+The reason is in the URL: `googlevideo.com` carries `ip=…` **inside `sparams`**, so it is bound to
+whatever address the instance saw. Behind Cloudflare that is not necessarily the caller's address,
+and when it is not, the binding rejects every request. From the handset it lines up and the stream
+plays. `AurisMusic` records the resolve — `resolved Zx31bB2vMns via jp2.invidious.f5.si
+(stream=true)` — so the successful path is the shipped default, with no `local=true` and no proxy.
+
+An earlier draft of this section concluded the opposite, from the desktop's `403`. That conclusion
+was wrong in a way worth keeping: **the failure was a property of where the request came from, not
+of the route.** A datacenter is not a phone; a route is decided on the handset.
+
+### What the instance route can and cannot do (measured 2026-10-21, on the handset)
+
+Eight tracks tapped in one session through `jp2`:
+
+| Outcome | Count |
+| --- | --- |
+| Stream resolved **and** a byte fetched | 3 |
+| Stream resolved, **every** URL refused with `403` | 4 |
+| No resolve at all | 1 |
+
+The refusals are neither per-format nor per-request. One refused track returned **ten** candidate
+urls — five audio-only, five muxed — and all ten answered `403`; asking the instance again for the
+same track produced the same refusal. That is why the resolver probes formats but does **not**
+re-ask: each extra request spends a budget of roughly five per burst (ten requests in a row gave
+five `200`s and then five `500`s), and that budget belongs to every *other* track.
+
+The likeliest explanation is a stale `n`-parameter descrambler in the instance — its player JS
+lagging YouTube's, which is the Invidious failure mode where a structurally valid URL is refused by
+the CDN. Unverified, but it fits the two observed properties: the split is per video, and it is
+stable across attempts. Nothing a client can repair.
+
+So the honest statement of the route is: **it plays roughly half the catalogue**, and for the other
+half it says so instead of failing inside the player. That measurement is what moved it to second
+place; as a fallback it is still worth having, because a `403` on one route says nothing about the
+other. Format fallback and URL verification are
+still right — they turn "the preferred URL is dead" from a player error the user cannot act on into
+either a working stream or a message that names the problem — but they cannot manufacture audio the
+instance did not give us.
+
+What does stay true is the Anubis half. `/vi/<id>/<name>.jpg`, `/latest_version` and even
+`/videoplayback` answer with 7 KB of HTML to any request that has not cleared the wall's
+proof-of-work, so **the proxied path is unavailable to the app** and must not be relied on; and
+image URLs handed back by the API are unusable, which is why artwork is derived. Do not script
+around Anubis — it is a bot wall, and the project's rule about circumvention applies to it exactly
+as it does to YouTube's.
+
+
+**Honest failure text.** `StreamRefusal` now distinguishes three cases that all used to read as
+"nothing playable": the *track* is gone (pick another song), a *provider declined* (retrying the
+same provider is pointless), and *no provider answered* (the fix is in Settings). Conflating them
+sends users in circles.
+
+### What was evaluated
+
+| Option | Outcome |
+| --- | --- |
+| NewPipeExtractor | **Chosen 2026-10-21, reversing the earlier rejection.** The GPL-3.0-or-later obligation is accepted deliberately (see the reversal above). It has no YouTube Music catalogue API, which is why it supplies only the audio half — albums, tracks and playlists still come from InnerTube. |
+| ArchiveTune (6.9k stars) | **Not importable, and unnecessary now.** Verified from its own `libs.versions.toml`: it depends on `com.github.TeamNewPipe:NewPipeExtractor` — the same library, used directly here. It is also an *app*, not a library, so nothing else in it was reusable. |
+| Obsidian-Music | **Irrelevant.** Apache-2.0 and Media3-based, but the repository contains **no source** — only `README.md`, `LICENSE`, `update.json` and screenshots. It is also a *local-file* player with no streaming at all. |
+| BotGuard attestation | **Attempted and found insufficient.** A valid, video-id-bound PO token was minted end-to-end offline (2026-10) and `/player` still refused every client identity. See *Verified 2026-10*. |
+| Invidious (public instance) | **Chosen.** AGPL-3.0, but consumed as an HTTP API — no copyleft in the APK, and no account. Verified 2026-10 to deliver a full audio track. Its one weakness is instance availability, which the `MusicSource` seam is built to absorb. |
+| Authenticated cookies (own account) | **Not chosen.** Technically the only unblocked *first-party* path, but it puts bearer credentials for the user's entire Google account into the app. Held in reserve, below. |
+
+ArchiveTune remains a useful data point, but for a narrower reason than was read into it at the
+time: its own disclaimer says it **"does not bypass YouTube's technical protections"** — it
+*authenticates*. That is one way past the wall, not evidence that it is the only one.
+NewPipeExtractor's approach — running the player script on the client, which is what a browser
+does anyway — works without an account, as measured above. The account route therefore stays in
+reserve rather than being the plan.
+
+### If this is revisited
+
+The fallback, if the instance route ever proves unusable, is user-supplied authenticated
+cookies (their own account) — the only unblocked *first-party* path. That is a ToS call for the
+project owner, and the UI work is: a sign-in screen, cookie persistence in the existing
+`sync_sessions`-style secure storage, and expiry handling in `StreamRefusal`. `InnerTubeClient` is
+already built, so this is a config change — but **it should be an explicit decision, never
+inherited from a GPL app.**
+
+Two caveats before that decision is taken. First, **security**: Google session cookies are
+bearer credentials for the user's entire Google account, not just YouTube Music. Any store that
+holds them is a high-value target, and a leaked cookie cannot be scoped down. Second, **order of
+operations**: the on-device probe is the gate. A server-side success from a datacenter has now
+been wrong twice, so nothing about playback is decided from a server result.
+
+---
+
+## 5. ⚠️ ABI drift — read this before changing `:source-api`
+
+> **Thirteen ABI breaks have now been found, and a fully green build passed through every one of
+> them.** The cause was structural, not bad luck: `mock-extension` is written against our own
+> interfaces, so it matches by construction. **Every "real APK" claim in this project was
+> self-referential until real extensions were loaded.**
+
+| # | Break | Why nothing caught it |
+| --- | --- | --- |
+| 1 | `AnimeFilterList` was a `typealias` | Emits **no JVM class**. Declared, compiled, unusable |
+| 2 | `AnimeFilter.state` typed `Boolean`/`Int` | Compiles to `()Z`/`()I`; extensions call `getState()()Ljava/lang/Object;` |
+| 3 | `NetworkHelper` was an `interface` | Exists, but extensions `invokevirtual` it |
+| 4 | `ParsedAnimeHttpSource.network` absent | No declaration to notice |
+| 5 | `ConfigurableAnimeSource` absent | Same |
+| 6 | Aniyomi 16+ has **no factory at all** | References `AnimeSourceFactory` **zero** times |
+| 7 | `network` on the wrong class | Belongs on `AnimeHttpSource`, read off the base from a constructor |
+| 8 | `AnimeFilter$Header`/`Separator` absent | Fails `getFilterList()` wholesale |
+| 9 | `AnimeFilter` subtypes were `final` | Kotlin default; extensions subclass them |
+| 10 | `RequestsKt.GET/POST` lacked `CacheControl?` | Compiles fine, fails at first request |
+| 11 | `OkHttpExtensionsKt`, `Track`, `asJsoup(charset)` | Each one member at a time |
+| 12 | `Video` was an `interface` | Interface, no constructor: `InstantiationError`. Found by the fixture that finally worked. |
+| 13 | v16 `Video` 16-param constructor absent | `NoSuchMethodError`. **Fixed** — see below |
+
+**Every one presented identically to a user: the extension loads and registers zero sources.**
+
+### Rules
+
+1. **A `typealias` is not a class.** Anything an extension can reference must be a real class.
+2. **A declaration check is not an ABI check.** Kotlin signatures can stay valid while the emitted
+   descriptor changes. Assert descriptors.
+3. **File facades are ABI.** Extensions link against `RequestsKt`, `OkHttpExtensionsKt`. Moving a
+   function between files breaks linking with a `NoClassDefFoundError` that reads like a missing
+   class.
+4. **Fingerprint normalisation is load-bearing.** Repos publish `AB:CD:EF:…`; `ApkSigner` emits
+   bare lower-case hex. Comparing raw strings would reject every real extension — and the failure is
+   indistinguishable from a forgery.
+5. **Read shapes from the dex, never from memory.** Every one of the eleven was found by inspecting
+   a real APK. All of my initial guesses were wrong in ways only the binary settled.
+
+### The guard, and its known hole
+
+`SourceApiAbiTest` asserts descriptors. `SourceApiAbiGuardTest` exists because **a guard that cannot
+fail is not a guard** — writing it found that `Class.getDeclaredMethod` matches on name and
+parameters only and **never compares the return type**, so the guard would have passed on exactly
+the drift it exists to catch.
+
+`DexAbiReader` — which would derive expectations from a real dex automatically — is committed
+**incomplete and `@Ignore`d**. It parses string and type tables but not `proto_ids` parameters.
+
+> **Do not make it green until it actually parses.** A guard reporting "no gaps" because it parsed
+> nothing is worse than no guard: it is indistinguishable from a perfect API, which is how eleven
+> gaps survived a green build.
+
+Two notes for anyone finishing it: `proto_id_item` is **8 bytes** (ushort, ushort, uint), not 12 —
+at a 12-byte stride the decoded values are header offsets like `20716` (`class_defs_off`). And
+`RandomAccessFile.read()` **throws** at EOF rather than returning −1.
+
+---
+
+## 6. Current verification state
+
+| Suite | Result |
+| --- | --- |
+| JVM | 337 tests, 4 skipped, **0 failures** |
+| Device (instrumentation) | **67 pass** |
+| `RealVideoResolutionTest` | **3 of 3 pass** — video resolution proven |
+| `RealCatalogExtractionTest` | **6 of 7 pass** — sole failure is animetake, on the Cloudflare block |
+| Conformance (`:source-api-conformance`) | green — but see §5: it cannot see incompleteness |
+
+### Music playback
+
+**A track plays end-to-end in the app, on the primary route, observed on the handset
+2026-10-21:** tapping a row gave `AurisMusic: resolved Zx31bB2vMns via NewPipe (audio/mp4)`, and
+`media_session` then reported `PLAYING` with the position advancing and buffer ahead, no
+`ExoPlaybackException`. Two tracks that the instance had refused or failed to resolve
+(`VZZA_38RUBI`, `Li89QVWmqTk`) also resolved and played through the same path, so the reversal in
+§4 is confirmed by the device rather than by a probe.
+
+The fallback is unchanged and still measured at **3 of 8** tracks in its own session — see §4 for
+why that split is per video. A refused track now names the problem instead of failing inside the
+player, because each resolver probes the URL it is about to return and withholds any it cannot
+fetch.
+
+`MusicSource` → `DefaultMusicSource` (InnerTube catalogue) + `FallbackStreamResolver`
+(`NewPipeStreamResolver` first, `InvidiousSource` second: instance list, failover, health cooldown,
+verified-URL cache), editable in **Settings → Music**. Forty-eight of the JVM tests above cover
+that seam — reduction, failover, cooldown, cache expiry, refusal handling, format fallback,
+verification, instance-URL normalisation, and the fallback policy itself.
+
+
+### What works, proven against real extensions
+
+Loads and registers · popular · latest · search · details · mapping through `AnimeSourceAdapter`
+into our own model · unknown-entry resilience · **the full video-resolution chain** — catalogue →
+details → episode → `getHosterList` → `getVideoList` → absolute URL.
+
+Two extension generations are covered: **v14** (animekhor, the fixture that proved video
+resolution) and **v16** (animetake, which exercises the 14-parameter `Video` constructor). Neither
+of the two West Coast fixtures can load — that is the Mihon ecosystem, a different API generation.
+
+### ✅ What works — video resolution is PROVEN
+
+**`AnimeSourceAdapter.pages()` is now observed against a live source.** The catalogue →
+details → episode → `getHosterList` → `getVideoList` → absolute-URL chain runs end to end, and the
+result additionally survives mapping through the adapter into our own model, so a pass cannot come
+from the extension alone. **3 of 3 `RealVideoResolutionTest` tests pass.**
+
+The fixture that made it work:
+
+| Fixture | Extension | Why it worked |
+| --- | --- | --- |
+| `real-flat-episode-extension.apk` | `eu.kanade.tachiyomi.animeextension.en.animekhor` v14.29 | Flat episodes (`episodeListParse`, **no** `seasonListParse`), no credentials, and a live site serving real episode links. It goes through Dailymotion, so the dex references Dailymotion's GraphQL hoster API — which is why it contains `password` and `oauth/token` strings. Those are the **hoster's** concerns, not an extension login. |
+
+The two that failed, kept as the record of what was ruled out:
+
+| Fixture | Extension | Shape | Outcome |
+| --- | --- | --- | --- |
+| `real-anime-catalog-extension.apk` | `…en.animetake` v16.9 | **Season-based.** Declares `seasonListParse`, overrides no `getEpisodeList`. | `getSeasonList` returns empty for every real title tried, so episodes — which hang off a season — are never reached. Also needs the 16-parameter `Video` constructor below, so it cannot serve the chain even if seasons did. |
+| *(superseded)* | `…en.kimoitv` v14.1 | Flat, no login. | Loaded and registered, but its site returned no entries for popular, latest or search. Dead endpoint, superseded in the same fixture slot. |
+
+### Gap #12, found by the working fixture
+
+`Video` was an **interface**, so it could not be instantiated. Extensions construct videos
+directly — `Video(url, quality, videoUrl, headers, subtitleTracks, audioTracks)` — and the call
+site died with `InstantiationError: …model.Video`. Now an `open class` with that exact
+constructor plus the three members the dex reads back (`ffmpegStreamArgs`, `mpvArgs`,
+`videoTitle`), verified descriptor-for-descriptor with `javap`.
+
+Two details that only the running test settled, both of which a from-memory guess would have got
+wrong:
+
+- **`videoUrl` must be computed, not stored.** Captured from the constructor argument, it goes
+  stale the moment the host assigns `url` afterwards — which is how the mock extension and every
+  `Video()`-then-assign caller work, so the streams all resolved to the empty string.
+- **`headers` is `okhttp3.Headers`, not `Map<String, String>`.** The host converts at
+  `toStreamTarget()`, since the ABI type is the one that appears in the descriptor.
+
+### What is still unverified
+
+**Manga page extraction.** `AnimeSourceAdapter.pages()` is now proven for **anime**. The manga
+branch is the same method but was not exercised by this run, and the manga-side extraction path
+(`getHosterList` for a manga source) remains unverified against a live source. The Keiyoushi
+fixture is a different API generation and cannot load — see §5.
+
+### Gap #13 — the v16 `Video` constructor — CLOSED via a secondary constructor and synthetic bridge
+
+v16 extensions call a 14-parameter constructor, with the `int` mask and `DefaultConstructorMarker`
+that Kotlin appends for defaulted parameters making 16 arguments in the dex call:
+
+```
+Video(String, String, Integer, Integer, Headers, boolean, List×6, String, boolean, int, DefaultConstructorMarker)
+```
+
+Our `Video` had only the 6-parameter form, so every v16 source died with `NoSuchMethodError`. It is
+now a secondary constructor with those 14 parameters and matching defaults, which makes Kotlin emit
+the synthetic bridge itself rather than hand-writing one. **Both constructors now coexist**, verified
+descriptor-for-descriptor with `javap`: v14 sources (animekhor) still use the 6-argument primary,
+v16 sources use this one.
+
+The parameter *names* are provisional — only the shapes are known, from the descriptor and the
+constants at the call site — and the code says so, because the names are not what linking checks
+and a confident-but-wrong name would be misleading.
+
+### Why animetake fails: a Cloudflare JS challenge, not our code
+
+Previously listed as "unknown whether the season layer has a parse gap or the site lists none". It
+is the **site**, established without guessing:
+
+- `seasonListParse` descriptors match ours **exactly** — `(Lokhttp3/Response;)Ljava/util/List;` — so
+  the extension does override it and it does get called.
+- `https://animetake.tv/anime/one-piece` returns **HTTP 200, 969 KB**, titled `One Piece -
+  AnimeTake` — so it is the real page and the request works.
+- That response contains **zero** occurrences of `season`/`staffel`/`saison` and **zero**
+  `/episode/` links, alongside Cloudflare markers and a `challenge` reference.
+
+So the page is a client-rendered / bot-filtered shell: a plain HTTP client receives markup with no
+episode data in it. There is nothing for `seasonListParse` to find. **This is a site-side
+constraint, not an ABI gap and not a parsing bug** — the same class of problem as Kitsu's
+DMCA'd repo rather than anything in `:source-api`.
+
+### Environment note
+
+The Android SDK lives at `/home/ana/android-sdk`, **not** `/tmp` — `/tmp` is a tmpfs and wiped it
+twice. Build via `scripts/release-build.sh`; R8 is memory-constrained and needs the serialised
+settings in `gradle.properties`.

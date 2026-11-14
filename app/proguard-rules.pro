@@ -1,0 +1,48 @@
+# Room
+-keep class * extends androidx.room.RoomDatabase
+-dontwarn androidx.room.paging.**
+
+# Aniyomi extension APKs are reflected over; keep the source interfaces intact.
+-keep class eu.kanade.tachiyomi.source.** { *; }
+-keep class eu.kanade.tachiyomi.source.anime.** { *; }
+-keep class eu.kanade.tachiyomi.source.manga.** { *; }
+-keep class eu.kanade.tachiyomi.network.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn retrofit2.**
+-dontwarn com.google.gson.**
+
+# kotlinx.serialization
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.**
+-keepclassmembers class com.auris.app.** {
+    *** Companion;
+}
+-keepclasseswithmembers class com.auris.app.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
+# Supabase
+-dontwarn org.jetbrains.annotations.**
+
+# NewPipeExtractor runs YouTube's player JavaScript through Rhino and reflects over it, so the
+# engine's classes cannot be renamed or stripped. The extractor's own classes are reached through
+# its public API only and shrink normally.
+-keep class org.mozilla.javascript.** { *; }
+-keep class org.mozilla.javascript.engine.** { *; }
+-dontwarn org.mozilla.javascript.**
+-dontwarn org.schabi.newpipe.extractor.**
+
+# Ktor plugin creation uses a Kotlin callable reference and reflects its original JVM
+# descriptor. Keep this API boundary and descriptor names intact in minified releases.
+-keepattributes Signature,EnclosingMethod
+-keep class io.ktor.client.plugins.api.** { *; }
+-keep interface kotlin.jvm.functions.Function0 { *; }
+-keep interface kotlin.jvm.functions.Function1 { *; }
+
+# Ktor constructs typeOf<HttpClientEngineCapability<*>>() on the first HTTP request.
+# Its generic parameter must survive for Kotlin reflection to accept the star projection.
+-keep interface io.ktor.client.engine.HttpClientEngineCapability { *; }
+# The next engine attribute reflects HttpClientConfig<*> and its engine-config bound.
+-keep class io.ktor.client.HttpClientConfig { *; }
+-keep class io.ktor.client.engine.HttpClientEngineConfig { *; }

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Window/starting background. Must match Color.kt's `AurisBackground` (#0B0B0E): it is what
+      the system draws before the first Compose frame — including the Android 12+ splash screen —
+      so a mismatch shows as a charcoal flash before the OLED UI appears.
+    -->
+    <color name="auris_background">#FF0B0B0E</color>
+    <color name="auris_icon_bg">#FF0B1020</color>
+
+    <!--
+      Adaptive-icon background, referenced by drawable/ic_launcher_background.xml.
+
+      Slightly darker than auris_background so the launcher tile has its own identity, while
+      staying in the same family — a lighter tile reads as a separate app on a dark home screen.
+    -->
+    <color name="auris_icon_background">#FF0A0E16</color>
+</resources>
