@@ -26,11 +26,14 @@ class MainActivity : BridgeActivity() {
         bridge?.webView?.webViewClient = object : BridgeWebViewClient(bridge) {
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                 val url = request?.url?.toString() ?: return super.shouldInterceptRequest(view, request)
-                if (url.contains("readdetectiveconan.com") || url.contains("mangapill.com")) {
+                val isMangaPill = url.contains("readdetectiveconan.com") || url.contains("mangapill.com")
+                val isWeebCentral = url.contains("planeptune.us") || url.contains("weebcentral.com")
+                if (isMangaPill || isWeebCentral) {
                     try {
+                        val referer = if (isWeebCentral) "https://weebcentral.com/" else "https://mangapill.com/"
                         val okReq = Request.Builder()
                             .url(url)
-                            .header("Referer", "https://mangapill.com/")
+                            .header("Referer", referer)
                             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                             .build()
                         val response = httpClient.newCall(okReq).execute()

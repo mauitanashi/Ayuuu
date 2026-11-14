@@ -325,7 +325,7 @@ const openManga = async (manga: MangaItem) => {
   chapterPage.value = 1;
   chapterFilter.value = '';
   try {
-    chapters.value = await MangaService.getChapters(manga.id, manga.title);
+    chapters.value = await MangaService.getChapters(manga.id, manga.title, manga.altTitle);
   } catch (err) {
     console.error('Failed to fetch chapters:', err);
   } finally {

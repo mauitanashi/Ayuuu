@@ -3,6 +3,7 @@ import { Capacitor, CapacitorHttp } from '@capacitor/core';
 export interface MangaItem {
   id: string;
   title: string;
+  altTitle?: string;
   coverUrl: string;
   description: string;
   latestChapter?: string;
@@ -25,6 +26,9 @@ const CLIENT_UA = 'Ayuuu/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290
 const API_BASE = isNative ? 'https://api.mangadex.org' : '/api-manga';
 const COVERS_BASE = isNative ? 'https://uploads.mangadex.org' : '/api-covers';
 const ALT_BASE = isNative ? 'https://mangapill.com' : '/api-alt';
+const WC_BASE = isNative ? 'https://weebcentral.com' : '/api-wc';
+
+const chapterCache = new Map<string, ChapterItem[]>();
 
 type QueryParam = [string, string];
 
@@ -80,6 +84,27 @@ async function fetchAltHtml(path: string): Promise<string> {
   }
 }
 
+async function fetchWcHtml(path: string): Promise<string> {
+  const url = `${WC_BASE}${path}`;
+  if (isNative) {
+    const res = await CapacitorHttp.get({
+      url,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://weebcentral.com/',
+      },
+    });
+    return String(res.data || '');
+  } else {
+    const res = await fetch(url, {
+      headers: {
+        'Referer': 'https://weebcentral.com/',
+      },
+    });
+    return await res.text();
+  }
+}
+
 export const MangaService = {
   async getPopularManga(limit = 24, offset = 0): Promise<MangaItem[]> {
     const params: QueryParam[] = [
@@ -129,7 +154,14 @@ export const MangaService = {
     }
   },
 
-  async getChapters(mangaId: string, mangaTitle?: string, limit = 100): Promise<ChapterItem[]> {
+  async getChapters(mangaId: string, mangaTitle?: string, altTitle?: string, limit = 100): Promise<ChapterItem[]> {
+    if (chapterCache.has(mangaId)) {
+      const cached = chapterCache.get(mangaId);
+      if (cached && cached.length > 0) {
+        return cached;
+      }
+    }
+
     // 1. Try primary hosted chapters
     const params: QueryParam[] = [
       ['translatedLanguage[]', 'en'],
@@ -143,38 +175,94 @@ export const MangaService = {
       ['limit', String(limit)],
     ];
 
-    const data = await fetchJson(`/manga/${mangaId}/feed`, params);
-    let chapters = (data.data || []).map((ch: any) => {
-      const attr = ch.attributes || {};
-      const chNum = attr.chapter ? `Ch. ${attr.chapter}` : 'Special';
-      const title = attr.title ? `${chNum}: ${attr.title}` : chNum;
-      return {
-        id: ch.id,
-        chapter: attr.chapter || '1',
-        title,
-        publishAt: attr.publishAt || '',
-      };
-    });
+    try {
+      const data = await fetchJson(`/manga/${mangaId}/feed`, params);
+      const chapters = (data.data || []).map((ch: any) => {
+        const attr = ch.attributes || {};
+        const chNum = attr.chapter ? `Ch. ${attr.chapter}` : 'Special';
+        const title = attr.title ? `${chNum}: ${attr.title}` : chNum;
+        return {
+          id: ch.id,
+          chapter: attr.chapter || '1',
+          title,
+          publishAt: attr.publishAt || '',
+        };
+      });
 
-    // 2. If fewer than 2 chapters found (e.g. One Piece, Jujutsu Kaisen with publisher external redirects),
-    // automatically fallback to full chapter resolver
-    if (chapters.length < 2) {
-      let titleToUse = mangaTitle;
-      if (!titleToUse) {
-        try {
-          const detail = await fetchJson(`/manga/${mangaId}`);
-          titleToUse = detail.data?.attributes?.title?.en || Object.values(detail.data?.attributes?.title || {})[0];
-        } catch (_) {}
+      if (chapters.length >= 2) {
+        chapterCache.set(mangaId, chapters);
+        return chapters;
       }
-      if (titleToUse) {
-        const altChapters = await this.getAltChapters(titleToUse);
-        if (altChapters.length > 0) {
-          return altChapters;
-        }
+    } catch (_) {}
+
+    // 2. If fewer than 2 chapters found (e.g. licensed titles like Solo Leveling, One Piece),
+    // automatically fallback to high-speed resolvers
+    let primaryTitle = mangaTitle;
+    let secondaryTitle = altTitle;
+    if (!primaryTitle) {
+      try {
+        const detail = await fetchJson(`/manga/${mangaId}`);
+        const attr = detail.data?.attributes || {};
+        const altEn = Array.isArray(attr.altTitles) ? attr.altTitles.find((t: any) => t.en)?.en : undefined;
+        primaryTitle = (attr.title?.en || altEn || Object.values(attr.title || {})[0]) as string | undefined;
+        secondaryTitle = Object.values(attr.title || {})[0] as string | undefined;
+      } catch (_) {}
+    }
+
+    if (primaryTitle) {
+      // First try fast resolver (resolves full series in ~500ms)
+      let resolved = await this.getWeebCentralChapters(primaryTitle);
+      if (resolved.length === 0 && secondaryTitle && secondaryTitle !== primaryTitle) {
+        resolved = await this.getWeebCentralChapters(secondaryTitle);
+      }
+      if (resolved.length > 0) {
+        chapterCache.set(mangaId, resolved);
+        return resolved;
+      }
+
+      // Secondary fallback
+      let altResolved = await this.getAltChapters(primaryTitle);
+      if (altResolved.length === 0 && secondaryTitle && secondaryTitle !== primaryTitle) {
+        altResolved = await this.getAltChapters(secondaryTitle);
+      }
+      if (altResolved.length > 0) {
+        chapterCache.set(mangaId, altResolved);
+        return altResolved;
       }
     }
 
-    return chapters;
+    return [];
+  },
+
+  async getWeebCentralChapters(title: string): Promise<ChapterItem[]> {
+    try {
+      const cleanTitle = title.replace(/[:\-]/g, ' ').replace(/\s+/g, ' ').trim();
+      const searchHtml = await fetchWcHtml(`/search/data?text=${encodeURIComponent(cleanTitle)}&display_mode=Full%20Display`);
+      const seriesMatch = searchHtml.match(/\/series\/([0-9A-Za-z]+)\/([^"]+)/) || searchHtml.match(/\/series\/([0-9A-Za-z]+)/);
+      if (!seriesMatch) return [];
+
+      const seriesId = seriesMatch[1];
+      const listHtml = await fetchWcHtml(`/series/${seriesId}/full-chapter-list`);
+      const regex = /href="\/chapters\/([0-9A-Za-z]+)"[^>]*>[\s\S]*?<span class="">([\s\S]*?)<\/span>/g;
+      const chapters: ChapterItem[] = [];
+      let m;
+      while ((m = regex.exec(listHtml)) !== null) {
+        const chId = m[1];
+        const rawTitle = m[2].trim().replace(/\s+/g, ' ');
+        const chNumMatch = rawTitle.match(/Chapter\s+([0-9.]+)/i);
+        const chapter = chNumMatch ? chNumMatch[1] : rawTitle;
+        chapters.push({
+          id: `wc:${chId}`,
+          chapter,
+          title: rawTitle,
+          publishAt: '',
+        });
+      }
+      return chapters.reverse();
+    } catch (e) {
+      console.warn('Fast chapter retrieval error:', e);
+      return [];
+    }
   },
 
   async getAltChapters(title: string): Promise<ChapterItem[]> {
@@ -207,6 +295,15 @@ export const MangaService = {
   },
 
   async getChapterPages(chapterId: string): Promise<string[]> {
+    if (chapterId.startsWith('wc:')) {
+      const chId = chapterId.substring(3);
+      const html = await fetchWcHtml(`/chapters/${chId}/images?is_prev=False&reading_style=long_strip`);
+      const imgMatches = [...html.matchAll(/<img[^>]+src="([^">]+)"/g)].map((x) => x[1]);
+      return imgMatches.map((url) => {
+        return !isNative ? `/proxy-img?url=${encodeURIComponent(url)}` : url;
+      });
+    }
+
     if (chapterId.startsWith('alt:')) {
       const path = chapterId.substring(4);
       const html = await fetchAltHtml(path);
@@ -234,8 +331,22 @@ export const MangaService = {
     return list.map((item) => {
       const id = item.id;
       const attr = item.attributes || {};
-      const title = attr.title?.en || Object.values(attr.title || {})[0] || 'Untitled';
-      const description = attr.description?.en || '';
+
+      const primaryEn = attr.title?.en;
+      const altEn = Array.isArray(attr.altTitles)
+        ? attr.altTitles.find((t: any) => t.en)?.en
+        : undefined;
+      const originalLangTitle = Object.values(attr.title || {})[0] as string | undefined;
+
+      const title = primaryEn || altEn || originalLangTitle || 'Untitled';
+      const altTitle =
+        !primaryEn && altEn && originalLangTitle
+          ? originalLangTitle
+          : altEn && altEn !== title
+          ? altEn
+          : undefined;
+
+      const description = attr.description?.en || Object.values(attr.description || {})[0] || '';
 
       const rels: any[] = item.relationships || [];
       const coverRel = rels.find((r) => r.type === 'cover_art');
@@ -250,6 +361,7 @@ export const MangaService = {
       return {
         id,
         title,
+        altTitle,
         description,
         coverUrl,
         author,

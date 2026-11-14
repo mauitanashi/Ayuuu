@@ -26,11 +26,18 @@ export default defineConfig({
           const target = new URL(targetUrl);
           const client = target.protocol === 'https:' ? https : http;
 
+          let referer = 'https://mangadex.org/';
+          if (target.host.includes('readdetectiveconan') || target.host.includes('mangapill')) {
+            referer = 'https://mangapill.com/';
+          } else if (target.host.includes('planeptune') || target.host.includes('weebcentral')) {
+            referer = 'https://weebcentral.com/';
+          }
+
           const proxyReq = client.request(
             target,
             {
               headers: {
-                'Referer': target.host.includes('readdetectiveconan') ? 'https://mangapill.com/' : 'https://mangadex.org/',
+                'Referer': referer,
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
               },
             },
@@ -82,6 +89,15 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api-alt/, ''),
         headers: {
           'Referer': 'https://mangapill.com/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      },
+      '/api-wc': {
+        target: 'https://weebcentral.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-wc/, ''),
+        headers: {
+          'Referer': 'https://weebcentral.com/',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
       },
