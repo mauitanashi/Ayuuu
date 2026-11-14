@@ -17,6 +17,11 @@ import androidx.media3.session.MediaSessionService
 @OptIn(UnstableApi::class)
 class MusicPlaybackService : MediaSessionService() {
 
+    companion object {
+        @Volatile
+        var instance: MusicPlaybackService? = null
+    }
+
     private var player: ExoPlayer? = null
     private var session: MediaSession? = null
 
@@ -33,6 +38,7 @@ class MusicPlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
 
         val audioAttributes = AudioAttributes.Builder()
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -74,10 +80,12 @@ class MusicPlaybackService : MediaSessionService() {
     }
 
     fun pause() {
+        player?.playWhenReady = false
         player?.pause()
     }
 
     fun resume() {
+        player?.playWhenReady = true
         player?.play()
     }
 
@@ -88,6 +96,9 @@ class MusicPlaybackService : MediaSessionService() {
     fun getPlayer(): ExoPlayer? = player
 
     override fun onDestroy() {
+        if (instance == this) {
+            instance = null
+        }
         session?.run {
             player.release()
             release()

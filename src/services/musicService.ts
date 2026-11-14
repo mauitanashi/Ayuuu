@@ -22,6 +22,7 @@ export const MusicService = {
         videoId: String(item.trackId || item.collectionId || Math.random()),
         title: item.trackName || 'Unknown Title',
         artist: item.artistName || 'Unknown Artist',
+        album: item.collectionName || '',
         artworkUrl: highResArt,
         streamUrl: item.previewUrl || '',
         durationMs: item.trackTimeMillis || 30000,

@@ -18,6 +18,10 @@ class MediaSessionPlugin : Plugin() {
     private var playbackService: MusicPlaybackService? = null
     private var isBound = false
 
+    private fun getService(): MusicPlaybackService? {
+        return playbackService ?: MusicPlaybackService.instance
+    }
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as? MusicPlaybackService.LocalBinder
@@ -72,7 +76,7 @@ class MediaSessionPlugin : Plugin() {
         }
 
         activity?.runOnUiThread {
-            playbackService?.playTrack(videoId, title, artist, artworkUrl, streamUrl)
+            getService()?.playTrack(videoId, title, artist, artworkUrl, streamUrl)
             call.resolve()
         }
     }
@@ -80,7 +84,10 @@ class MediaSessionPlugin : Plugin() {
     @PluginMethod
     fun pause(call: PluginCall) {
         activity?.runOnUiThread {
-            playbackService?.pause()
+            val s = getService()
+            s?.pause()
+            s?.getPlayer()?.playWhenReady = false
+            s?.getPlayer()?.pause()
             call.resolve()
         }
     }
@@ -88,7 +95,10 @@ class MediaSessionPlugin : Plugin() {
     @PluginMethod
     fun resume(call: PluginCall) {
         activity?.runOnUiThread {
-            playbackService?.resume()
+            val s = getService()
+            s?.resume()
+            s?.getPlayer()?.playWhenReady = true
+            s?.getPlayer()?.play()
             call.resolve()
         }
     }
@@ -97,7 +107,7 @@ class MediaSessionPlugin : Plugin() {
     fun seekTo(call: PluginCall) {
         val positionMs = call.getInt("positionMs")?.toLong() ?: 0L
         activity?.runOnUiThread {
-            playbackService?.seekTo(positionMs)
+            getService()?.seekTo(positionMs)
             call.resolve()
         }
     }
