@@ -5,7 +5,7 @@ import http from 'http'
 import https from 'https'
 import { URL } from 'url'
 
-const CLIENT_UA = 'Auris/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290da-25f99f56)';
+const CLIENT_UA = 'Ayuuu/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290da-25f99f56)';
 
 // https://vite.dev/config/
 export default defineConfig({

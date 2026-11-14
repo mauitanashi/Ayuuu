@@ -21,7 +21,7 @@ class MainActivity : BridgeActivity() {
         registerPlugin(VideoPlayerPlugin::class.java)
         super.onCreate(savedInstanceState)
 
-        bridge?.webView?.settings?.userAgentString = "Auris/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290da-25f99f56)"
+        bridge?.webView?.settings?.userAgentString = "Ayuuu/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290da-25f99f56)"
 
         bridge?.webView?.webViewClient = object : BridgeWebViewClient(bridge) {
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {

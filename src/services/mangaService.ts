@@ -19,7 +19,7 @@ export interface ChapterItem {
 const isNative = Capacitor.isNativePlatform();
 
 // Authenticated client user agent
-const CLIENT_UA = 'Auris/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290da-25f99f56)';
+const CLIENT_UA = 'Ayuuu/1.0 (personal-client-4eb77cf5-46a6-4789-9305-73dd5d1290da-25f99f56)';
 
 // In web development, route through Vite proxy; on native, call directly
 const API_BASE = isNative ? 'https://api.mangadex.org' : '/api-manga';

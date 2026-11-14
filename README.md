@@ -1,4 +1,4 @@
-# Auris
+# Ayuuu
 
 <p align="center">
   <strong>Native Android media client unifying music, anime, and manga in a dark-only, Apple Music-inspired aesthetic.</strong>
@@ -13,7 +13,7 @@
 
 ---
 
-Auris is built from scratch in Kotlin and Jetpack Compose. It bridges music streaming, anime playback, and manga reading into a single cohesive experience with zero telemetry, local-first SQLite persistence, and Supabase-housed sync.
+Ayuuu is built from scratch in Kotlin and Jetpack Compose. It bridges music streaming, anime playback, and manga reading into a single cohesive experience with zero telemetry, local-first SQLite persistence, and Supabase-housed sync.
 
 Current release: **1.0.2** (versionCode 19). See [Releases](https://github.com/miguelraphael/ionic-auris/releases) and `docs/RELEASE_NOTES.md`.
 
