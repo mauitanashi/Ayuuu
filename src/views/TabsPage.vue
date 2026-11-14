@@ -48,6 +48,14 @@
             >
               <ion-icon :icon="playForward" class="mini-next-icon"></ion-icon>
             </button>
+
+            <button
+              class="mini-action-btn mini-close-btn"
+              @click="stopPlayback"
+              aria-label="Close music"
+            >
+              <ion-icon :icon="closeOutline" class="mini-close-icon"></ion-icon>
+            </button>
           </div>
         </div>
       </div>
@@ -84,9 +92,17 @@
       :breakpoints="[0, 1]"
     >
       <div class="now-playing-container" v-if="activeTrack">
-        <!-- Dismiss Handle Bar -->
-        <div class="drag-handle-bar" @click="closeFullPlayer">
-          <span class="handle-bar"></span>
+        <!-- Top Dismiss & Stop Bar -->
+        <div class="full-player-top-bar">
+          <button class="top-nav-btn" @click="closeFullPlayer" aria-label="Minimize">
+            <ion-icon :icon="chevronDownOutline" class="top-nav-icon"></ion-icon>
+          </button>
+          <div class="drag-handle-bar" @click="closeFullPlayer">
+            <span class="handle-bar"></span>
+          </div>
+          <button class="top-nav-btn top-close-btn" @click="stopPlayback" aria-label="Stop and close music">
+            <ion-icon :icon="closeOutline" class="top-nav-icon"></ion-icon>
+          </button>
         </div>
 
         <!-- Album Artwork (centered square with rounded corners & drop shadow) -->
@@ -251,6 +267,8 @@ import {
   barChartOutline,
   searchOutline,
   menuOutline,
+  closeOutline,
+  chevronDownOutline,
 } from "ionicons/icons";
 import {
   activeTrack,
@@ -272,6 +290,7 @@ import {
   skipPrevious,
   openFullPlayer,
   closeFullPlayer,
+  stopPlayback,
 } from "../services/playerService";
 
 const handleSeekClick = async (e: MouseEvent) => {
@@ -433,6 +452,19 @@ ion-tab-button.tab-selected ion-icon {
   color: #a1a1a6;
 }
 
+.mini-close-btn {
+  color: #8e8e93;
+  margin-left: 2px;
+}
+
+.mini-close-btn:active {
+  color: #ffffff;
+}
+
+.mini-close-icon {
+  font-size: 20px;
+}
+
 /* Full Music Player Modal (Ref: UI/music-player-UI.jpg) */
 .full-player-modal {
   --background: #0e1116;
@@ -452,11 +484,42 @@ ion-tab-button.tab-selected ion-icon {
   overflow-y: auto;
 }
 
-.drag-handle-bar {
+.full-player-top-bar {
   width: 100%;
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0 10px 0;
+}
+
+.top-nav-btn {
+  background: transparent;
+  border: none;
+  color: #a1a1a6;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
   justify-content: center;
-  padding: 6px 0 12px 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.top-nav-btn:active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.top-nav-icon {
+  font-size: 24px;
+}
+
+.drag-handle-bar {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  padding: 6px 0;
   cursor: pointer;
 }
 

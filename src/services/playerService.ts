@@ -151,6 +151,19 @@ export const closeFullPlayer = () => {
   isFullPlayerOpen.value = false;
 };
 
+export const stopPlayback = async () => {
+  isPlaying.value = false;
+  stopTicker();
+  currentPositionMs.value = 0;
+  activeTrack.value = null;
+  isFullPlayerOpen.value = false;
+  try {
+    await MediaSession.pause();
+  } catch (e) {
+    console.warn("MediaSession pause error on stop:", e);
+  }
+};
+
 // Listen to playback state changes
 MediaSession.addListener("playbackStateChange", (state: any) => {
   isPlaying.value = state.isPlaying;
