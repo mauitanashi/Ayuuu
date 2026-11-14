@@ -196,6 +196,27 @@ export class VideoPlayerWeb extends WebPlugin implements VideoPlayerPlugin {
     header.appendChild(closeBtn);
     overlay.appendChild(header);
 
+    const isEmbed = options.url.includes('/stream/') || options.url.includes('/embed') || options.url.includes('megaplay') || options.url.includes('zokoanime');
+    if (isEmbed) {
+      const iframe = document.createElement('iframe');
+      iframe.src = options.url;
+      iframe.style.cssText = 'width: 100%; height: 100%; border: none; flex: 1; padding-top: 54px; box-sizing: border-box; background: #000;';
+      iframe.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
+      iframe.setAttribute('allowfullscreen', 'true');
+      overlay.appendChild(iframe);
+      document.body.appendChild(overlay);
+      this.overlay = overlay;
+
+      const handleKey = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          this.cleanup();
+          window.removeEventListener('keydown', handleKey);
+        }
+      };
+      window.addEventListener('keydown', handleKey);
+      return;
+    }
+
     const video = document.createElement('video');
     video.controls = true;
     video.autoplay = true;
@@ -261,6 +282,10 @@ export class VideoPlayerWeb extends WebPlugin implements VideoPlayerPlugin {
         if (video) {
           video.pause();
           video.src = '';
+        }
+        const iframe = this.overlay.querySelector('iframe');
+        if (iframe) {
+          iframe.src = 'about:blank';
         }
         this.overlay.remove();
       } catch {}

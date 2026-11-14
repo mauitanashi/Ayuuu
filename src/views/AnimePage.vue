@@ -169,8 +169,10 @@ const playEpisode = async (ep: AnimeEpisodeItem) => {
       ep.number
     );
 
+    const playUrl = stream.embedUrl || stream.streamUrl;
+
     await VideoPlayer.playVideo({
-      url: stream.streamUrl,
+      url: playUrl,
       title: `${selectedAnime.value.name} - ${ep.title}`,
       headers: stream.headers,
       positionMs: 0,

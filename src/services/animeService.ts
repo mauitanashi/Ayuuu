@@ -24,6 +24,7 @@ export interface EpisodeSubtitle {
 
 export interface EpisodeStreamResult {
   streamUrl: string;
+  embedUrl?: string;
   isHls: boolean;
   headers: Record<string, string>;
   subtitles?: EpisodeSubtitle[];
@@ -296,6 +297,7 @@ export const AnimeService = {
               if (decrypted?.file) {
                 return {
                   streamUrl: decrypted.file,
+                  embedUrl: mpServer.url,
                   isHls: true,
                   headers: {
                     'Referer': 'https://megaplay.buzz/',
@@ -310,6 +312,23 @@ export const AnimeService = {
                   outro: data.outro,
                 };
               }
+            } else if (data?.sources?.[0]?.file) {
+              return {
+                streamUrl: data.sources[0].file,
+                embedUrl: mpServer.url,
+                isHls: true,
+                headers: {
+                  'Referer': 'https://megaplay.buzz/',
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                },
+                subtitles: (data.tracks || []).filter((t: any) => t.kind === 'captions').map((t: any) => ({
+                  file: t.file,
+                  label: t.label || 'English',
+                  default: !!t.default,
+                })),
+                intro: data.intro,
+                outro: data.outro,
+              };
             }
           }
         } catch (mpErr) {
@@ -335,6 +354,7 @@ export const AnimeService = {
             if (payload?.src) {
               return {
                 streamUrl: payload.src,
+                embedUrl: zkServer.url,
                 isHls: true,
                 headers: {
                   'Referer': 'https://zokoanime.video/',
@@ -352,6 +372,19 @@ export const AnimeService = {
       } catch (zkErr) {
         console.warn('ZokoAnime extraction failed:', zkErr);
       }
+    }
+
+    // 4. Fallback to first available server embed URL
+    if (servers.length > 0) {
+      return {
+        streamUrl: servers[0].url,
+        embedUrl: servers[0].url,
+        isHls: true,
+        headers: {
+          'Referer': 'https://hianime.at/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      };
     }
 
     throw new Error('Unable to resolve playable video stream for this episode');
