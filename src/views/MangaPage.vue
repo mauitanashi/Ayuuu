@@ -198,6 +198,7 @@ import {
   IonIcon,
   IonInfiniteScroll,
   IonInfiniteScrollContent,
+  onIonViewDidEnter,
 } from '@ionic/vue';
 import { bookOutline, swapVerticalOutline } from 'ionicons/icons';
 import { MangaService, MangaItem, ChapterItem } from '../services/mangaService';
@@ -341,6 +342,7 @@ const closeModal = () => {
 const readChapter = (ch: ChapterItem) => {
   if (!selectedManga.value) return;
   const mangaId = selectedManga.value.id;
+  selectedManga.value = null;
   router.push(`/manga/${mangaId}/chapter/${encodeURIComponent(ch.id)}`);
 };
 
@@ -397,6 +399,19 @@ watch(
   },
   { immediate: true }
 );
+
+onIonViewDidEnter(async () => {
+  const openId = route.query.open as string;
+  if (openId && (!selectedManga.value || selectedManga.value.id !== openId)) {
+    let manga = mangaList.value.find((m) => m.id === openId);
+    if (!manga) {
+      manga = (await MangaService.getMangaById(openId)) || undefined;
+    }
+    if (manga) {
+      openManga(manga);
+    }
+  }
+});
 
 onMounted(() => {
   loadPopular();
