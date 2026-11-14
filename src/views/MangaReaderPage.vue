@@ -311,14 +311,7 @@ const prevPage = () => {
 };
 
 const handleBack = () => {
-  if (currentPage.value > 0) {
-    currentPage.value--;
-    if (isLongStrip.value) {
-      scrollToPage(currentPage.value);
-    }
-  } else {
-    router.back();
-  }
+  router.replace({ path: '/tabs/manga', query: { open: mangaId.value } });
 };
 
 useBackButton(10, () => {

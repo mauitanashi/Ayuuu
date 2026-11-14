@@ -116,6 +116,19 @@ export const MangaService = {
     return this.parseList(data.data || []);
   },
 
+  async getMangaById(id: string): Promise<MangaItem | null> {
+    try {
+      const data = await fetchJson(`/manga/${id}`, [
+        ['includes[]', 'cover_art'],
+        ['includes[]', 'author'],
+      ]);
+      const list = this.parseList([data.data]);
+      return list[0] || null;
+    } catch {
+      return null;
+    }
+  },
+
   async getChapters(mangaId: string, mangaTitle?: string, limit = 100): Promise<ChapterItem[]> {
     // 1. Try primary hosted chapters
     const params: QueryParam[] = [

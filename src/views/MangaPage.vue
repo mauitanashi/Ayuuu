@@ -57,12 +57,12 @@
       </div>
 
       <!-- Chapter Selection Modal -->
-      <ion-modal :is-open="selectedManga !== null" @didDismiss="selectedManga = null">
+      <ion-modal :is-open="selectedManga !== null" @didDismiss="closeModal">
         <ion-header>
           <ion-toolbar>
             <ion-title>{{ selectedManga?.title }}</ion-title>
             <ion-buttons slot="end">
-              <ion-button @click="selectedManga = null">Close</ion-button>
+              <ion-button @click="closeModal">Close</ion-button>
             </ion-buttons>
           </ion-toolbar>
         </ion-header>
@@ -78,19 +78,93 @@
             <p class="status-msg">No readable chapters available for this title.</p>
           </div>
 
-          <ion-list v-else>
-            <ion-item
-              v-for="ch in chapters"
-              :key="ch.id"
-              button
-              @click="readChapter(ch)"
-            >
-              <ion-label>
-                <h3>{{ ch.title }}</h3>
-              </ion-label>
-              <ion-icon :icon="bookOutline" slot="end" color="primary"></ion-icon>
-            </ion-item>
-          </ion-list>
+          <div v-else>
+            <!-- Chapter Search & Sort Controls -->
+            <div class="chapter-toolbar">
+              <ion-searchbar
+                v-model="chapterFilter"
+                placeholder="Filter chapter (e.g. 1000)..."
+                :debounce="150"
+                class="chapter-searchbar"
+              ></ion-searchbar>
+              <ion-button
+                fill="outline"
+                size="small"
+                class="sort-toggle-btn"
+                @click="toggleSortOrder"
+              >
+                <ion-icon :icon="swapVerticalOutline" slot="start"></ion-icon>
+                {{ isSortAsc ? 'Oldest' : 'Newest' }}
+              </ion-button>
+            </div>
+
+            <!-- Chapter List (10 per page) -->
+            <ion-list>
+              <ion-item
+                v-for="ch in paginatedChapters"
+                :key="ch.id"
+                button
+                @click="readChapter(ch)"
+              >
+                <ion-label>
+                  <h3>{{ ch.title }}</h3>
+                </ion-label>
+                <ion-icon :icon="bookOutline" slot="end" color="primary"></ion-icon>
+              </ion-item>
+            </ion-list>
+
+            <div v-if="filteredChapters.length === 0" class="no-chapters-msg ion-padding">
+              <p>No chapters found matching "{{ chapterFilter }}".</p>
+            </div>
+
+            <!-- Pagination Bar (10 per page) -->
+            <div class="chapter-pagination" v-if="filteredChapters.length > 0">
+              <div class="page-controls">
+                <ion-button
+                  size="small"
+                  fill="outline"
+                  :disabled="chapterPage <= 1"
+                  @click="goToChapterPage(chapterPage - 1)"
+                >
+                  Prev
+                </ion-button>
+
+                <span class="page-number-text">
+                  Page {{ chapterPage }} / {{ totalChapterPages }}
+                  <span class="total-chapter-count">({{ filteredChapters.length }} chapters)</span>
+                </span>
+
+                <ion-button
+                  size="small"
+                  fill="outline"
+                  :disabled="chapterPage >= totalChapterPages"
+                  @click="goToChapterPage(chapterPage + 1)"
+                >
+                  Next
+                </ion-button>
+              </div>
+
+              <!-- Quick jump buttons for long manga (e.g. One Piece) -->
+              <div class="quick-jump-actions" v-if="totalChapterPages > 2">
+                <ion-button
+                  size="small"
+                  fill="clear"
+                  :disabled="chapterPage === 1"
+                  @click="goToChapterPage(1)"
+                >
+                  First Page
+                </ion-button>
+                <ion-button
+                  size="small"
+                  fill="clear"
+                  :disabled="chapterPage === totalChapterPages"
+                  @click="goToChapterPage(totalChapterPages)"
+                >
+                  Last Page
+                </ion-button>
+              </div>
+            </div>
+          </div>
         </ion-content>
       </ion-modal>
     </ion-content>
@@ -98,8 +172,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { ref, computed, watch, onMounted } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
 import {
   IonPage,
   IonHeader,
@@ -125,10 +199,11 @@ import {
   IonInfiniteScroll,
   IonInfiniteScrollContent,
 } from '@ionic/vue';
-import { bookOutline } from 'ionicons/icons';
+import { bookOutline, swapVerticalOutline } from 'ionicons/icons';
 import { MangaService, MangaItem, ChapterItem } from '../services/mangaService';
 
 const router = useRouter();
+const route = useRoute();
 
 const mangaList = ref<MangaItem[]>([]);
 const chapters = ref<ChapterItem[]>([]);
@@ -142,6 +217,12 @@ const error = ref<string | null>(null);
 
 const offset = ref(0);
 const hasMore = ref(true);
+
+// Chapter pagination & filtering state (10 per page)
+const chapterPage = ref(1);
+const chapterPageSize = 10;
+const chapterFilter = ref('');
+const isSortAsc = ref(false); // default Newest First
 
 const fallbackCover = 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=400&q=80';
 
@@ -237,6 +318,8 @@ const openManga = async (manga: MangaItem) => {
   selectedManga.value = manga;
   isLoadingChapters.value = true;
   chapters.value = [];
+  chapterPage.value = 1;
+  chapterFilter.value = '';
   try {
     chapters.value = await MangaService.getChapters(manga.id, manga.title);
   } catch (err) {
@@ -246,12 +329,74 @@ const openManga = async (manga: MangaItem) => {
   }
 };
 
+const closeModal = () => {
+  selectedManga.value = null;
+  chapterFilter.value = '';
+  chapterPage.value = 1;
+  if (route.query.open) {
+    router.replace({ path: '/tabs/manga', query: {} });
+  }
+};
+
 const readChapter = (ch: ChapterItem) => {
   if (!selectedManga.value) return;
   const mangaId = selectedManga.value.id;
-  selectedManga.value = null;
   router.push(`/manga/${mangaId}/chapter/${encodeURIComponent(ch.id)}`);
 };
+
+// Chapter Pagination Logic
+const toggleSortOrder = () => {
+  isSortAsc.value = !isSortAsc.value;
+  chapterPage.value = 1;
+};
+
+const goToChapterPage = (page: number) => {
+  if (page >= 1 && page <= totalChapterPages.value) {
+    chapterPage.value = page;
+  }
+};
+
+const filteredChapters = computed(() => {
+  let list = [...chapters.value];
+  if (chapterFilter.value.trim()) {
+    const q = chapterFilter.value.trim().toLowerCase();
+    list = list.filter((ch) => ch.title.toLowerCase().includes(q) || ch.chapter.toLowerCase().includes(q));
+  }
+  list.sort((a, b) => {
+    const numA = parseFloat(a.chapter) || 0;
+    const numB = parseFloat(b.chapter) || 0;
+    return isSortAsc.value ? numA - numB : numB - numA;
+  });
+  return list;
+});
+
+const totalChapterPages = computed(() => {
+  return Math.ceil(filteredChapters.value.length / chapterPageSize) || 1;
+});
+
+const paginatedChapters = computed(() => {
+  const start = (chapterPage.value - 1) * chapterPageSize;
+  return filteredChapters.value.slice(start, start + chapterPageSize);
+});
+
+// Watch query ?open=mangaId to re-open chapters on return from reader
+watch(
+  () => route.query.open,
+  async (newMangaId) => {
+    if (newMangaId && typeof newMangaId === 'string') {
+      if (!selectedManga.value || selectedManga.value.id !== newMangaId) {
+        let manga = mangaList.value.find((m) => m.id === newMangaId);
+        if (!manga) {
+          manga = (await MangaService.getMangaById(newMangaId)) || undefined;
+        }
+        if (manga) {
+          openManga(manga);
+        }
+      }
+    }
+  },
+  { immediate: true }
+);
 
 onMounted(() => {
   loadPopular();
@@ -315,5 +460,65 @@ onMounted(() => {
   line-height: 1.4;
   max-height: 120px;
   overflow-y: auto;
+}
+
+/* Chapter toolbar & pagination */
+.chapter-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.chapter-searchbar {
+  --background: #1e1e24;
+  padding: 0;
+  flex: 1;
+}
+
+.sort-toggle-btn {
+  white-space: nowrap;
+}
+
+.chapter-pagination {
+  margin-top: 16px;
+  padding-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 320px;
+}
+
+.page-number-text {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #f4f4f5;
+  text-align: center;
+}
+
+.total-chapter-count {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: #a1a1aa;
+}
+
+.quick-jump-actions {
+  display: flex;
+  gap: 16px;
+}
+
+.no-chapters-msg {
+  text-align: center;
+  color: #a1a1aa;
+  font-size: 0.9rem;
 }
 </style>
