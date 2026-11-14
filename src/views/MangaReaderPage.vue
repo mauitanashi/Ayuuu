@@ -7,7 +7,9 @@
     >
       <ion-toolbar color="dark">
         <ion-buttons slot="start">
-          <ion-back-button default-href="/tabs/manga"></ion-back-button>
+          <ion-button @click.stop="handleBack">
+            <ion-icon :icon="arrowBack" slot="icon-only"></ion-icon>
+          </ion-button>
         </ion-buttons>
         <ion-title class="reader-title">{{ currentChapter?.title || 'Reader' }}</ion-title>
         <ion-buttons slot="end">
@@ -23,6 +25,7 @@
 
     <!-- Reader Content -->
     <ion-content
+      ref="contentRef"
       :fullscreen="true"
       class="reader-content"
       @click="toggleOverlay"
@@ -56,17 +59,21 @@
           />
         </div>
 
-        <!-- End of chapter actions -->
+        <!-- End of chapter section -->
         <div class="chapter-end-section ion-padding" v-if="pages.length > 0">
-          <p class="end-msg">End of chapter</p>
+          <p class="end-msg">End of {{ currentChapter?.title || 'Chapter' }}</p>
           <ion-button
             v-if="nextChapter"
             expand="block"
             color="primary"
+            size="large"
+            class="next-chapter-btn"
             @click.stop="goToChapter(nextChapter)"
           >
             Next: {{ nextChapter.title }}
+            <ion-icon :icon="arrowForward" slot="end"></ion-icon>
           </ion-button>
+          <p v-else class="caught-up-text">You have reached the latest chapter.</p>
         </div>
       </div>
 
@@ -80,6 +87,22 @@
             class="manga-page-img paged-img"
             @error="onPageError(currentPage, $event)"
           />
+
+          <!-- End of chapter button shown on last page in paged mode -->
+          <div v-if="currentPage === pages.length - 1" class="paged-last-page-action">
+            <ion-button
+              v-if="nextChapter"
+              expand="block"
+              color="primary"
+              size="default"
+              class="next-chapter-btn"
+              @click.stop="goToChapter(nextChapter)"
+            >
+              Next: {{ nextChapter.title }}
+              <ion-icon :icon="arrowForward" slot="end"></ion-icon>
+            </ion-button>
+            <p v-else class="caught-up-text">You have reached the latest chapter.</p>
+          </div>
         </div>
       </div>
     </ion-content>
@@ -125,14 +148,14 @@ import {
   IonToolbar,
   IonTitle,
   IonButtons,
-  IonBackButton,
   IonButton,
   IonContent,
   IonFooter,
   IonIcon,
   IonSpinner,
+  useBackButton,
 } from '@ionic/vue';
-import { documentOutline, albumsOutline } from 'ionicons/icons';
+import { documentOutline, albumsOutline, arrowBack, arrowForward } from 'ionicons/icons';
 import { MangaService, ChapterItem } from '../services/mangaService';
 
 const route = useRoute();
@@ -141,6 +164,7 @@ const router = useRouter();
 const mangaId = computed(() => (route.params.id as string) || '');
 const chapterId = ref(decodeURIComponent((route.params.chapterId as string) || ''));
 
+const contentRef = ref<any>(null);
 const showOverlay = ref(true);
 const isLongStrip = ref(true);
 const currentPage = ref(0);
@@ -152,7 +176,17 @@ const chapterList = ref<ChapterItem[]>([]);
 let observer: IntersectionObserver | null = null;
 
 const currentChapterIndex = computed(() => {
-  return chapterList.value.findIndex((c) => c.id === chapterId.value);
+  const currentId = chapterId.value.trim();
+  const idx = chapterList.value.findIndex(
+    (c) => c.id === currentId || decodeURIComponent(c.id) === currentId || c.id === decodeURIComponent(currentId)
+  );
+  if (idx !== -1) return idx;
+
+  const matchNum = currentId.match(/(\d+(?:\.\d+)?)/);
+  if (matchNum) {
+    return chapterList.value.findIndex((c) => c.chapter === matchNum[1]);
+  }
+  return -1;
 });
 
 const currentChapter = computed(() => {
@@ -248,7 +282,9 @@ const scrollToPage = (idx: number) => {
 const goToChapter = (ch: ChapterItem) => {
   chapterId.value = ch.id;
   currentPage.value = 0;
+  pages.value = [];
   router.replace(`/manga/${mangaId.value}/chapter/${encodeURIComponent(ch.id)}`);
+  contentRef.value?.$el?.scrollToTop?.(0);
   loadPages();
 };
 
@@ -273,6 +309,21 @@ const prevPage = () => {
     goToChapter(prevChapter.value);
   }
 };
+
+const handleBack = () => {
+  if (currentPage.value > 0) {
+    currentPage.value--;
+    if (isLongStrip.value) {
+      scrollToPage(currentPage.value);
+    }
+  } else {
+    router.back();
+  }
+};
+
+useBackButton(10, () => {
+  handleBack();
+});
 
 const onPageError = (index: number, event: Event) => {
   const img = event.target as HTMLImageElement;
@@ -388,11 +439,21 @@ onUnmounted(() => {
   max-width: 100%;
   max-height: 100%;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .paged-img {
   max-height: 100vh;
   object-fit: contain;
+}
+
+.paged-last-page-action {
+  margin-top: 16px;
+  width: 90%;
+  max-width: 400px;
+  text-align: center;
 }
 
 .page-indicator {
@@ -413,5 +474,15 @@ onUnmounted(() => {
   color: #a1a1aa;
   margin-bottom: 16px;
   font-size: 0.95rem;
+}
+
+.next-chapter-btn {
+  font-weight: 600;
+}
+
+.caught-up-text {
+  color: #71717a;
+  font-size: 0.9rem;
+  margin-top: 8px;
 }
 </style>
