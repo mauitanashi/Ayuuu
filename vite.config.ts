@@ -101,6 +101,24 @@ export default defineConfig({
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
       },
+      '/api-anime': {
+        target: 'https://hianime.at',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-anime/, ''),
+        headers: {
+          'Referer': 'https://hianime.at/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      },
+      '/api-stream': {
+        target: 'https://megaplay.buzz',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-stream/, ''),
+        headers: {
+          'Referer': 'https://megaplay.buzz/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      },
     },
   },
 })

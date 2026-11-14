@@ -68,7 +68,8 @@
               <ion-label>
                 <h3>{{ ep.title }}</h3>
               </ion-label>
-              <ion-icon :icon="playCircleOutline" slot="end" class="ep-play-icon"></ion-icon>
+              <ion-spinner v-if="resolvingEpId === ep.id" name="crescent" slot="end" class="ep-spinner"></ion-spinner>
+              <ion-icon v-else :icon="playCircleOutline" slot="end" class="ep-play-icon"></ion-icon>
             </ion-item>
           </ion-list>
         </ion-content>
@@ -110,6 +111,7 @@ const searchQuery = ref('');
 const isSearching = ref(false);
 const isLoading = ref(true);
 const isLoadingEpisodes = ref(false);
+const resolvingEpId = ref<string | null>(null);
 
 const animeList = ref<AnimeItem[]>([]);
 const episodes = ref<AnimeEpisodeItem[]>([]);
@@ -148,7 +150,7 @@ const selectAnime = async (anime: AnimeItem) => {
   isLoadingEpisodes.value = true;
   episodes.value = [];
   try {
-    episodes.value = await AnimeService.getEpisodes(anime.id);
+    episodes.value = await AnimeService.getEpisodes(anime.id, anime.name);
   } catch (err) {
     console.error('Failed to fetch episodes:', err);
   } finally {
@@ -157,23 +159,26 @@ const selectAnime = async (anime: AnimeItem) => {
 };
 
 const playEpisode = async (ep: AnimeEpisodeItem) => {
-  if (!selectedAnime.value) return;
+  if (!selectedAnime.value || resolvingEpId.value) return;
 
-  const sampleHlsStream =
-    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
-
+  resolvingEpId.value = ep.id;
   try {
+    const stream = await AnimeService.getEpisodeStream(
+      ep.id,
+      selectedAnime.value.name,
+      ep.number
+    );
+
     await VideoPlayer.playVideo({
-      url: sampleHlsStream,
+      url: stream.streamUrl,
       title: `${selectedAnime.value.name} - ${ep.title}`,
-      headers: {
-        'Referer': 'https://allanime.to',
-        'User-Agent': 'Mozilla/5.0 (Android; Mobile)',
-      },
+      headers: stream.headers,
       positionMs: 0,
     });
   } catch (err) {
-    console.error('VideoPlayer launch error:', err);
+    console.error('Failed to play episode stream:', err);
+  } finally {
+    resolvingEpId.value = null;
   }
 };
 
@@ -272,5 +277,11 @@ onMounted(() => {
 
 .ep-play-icon {
   color: #f0f0f2;
+}
+
+.ep-spinner {
+  width: 22px;
+  height: 22px;
+  color: #5b86e5;
 }
 </style>

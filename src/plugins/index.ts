@@ -1,4 +1,5 @@
 import { registerPlugin, WebPlugin } from '@capacitor/core';
+import Hls from 'hls.js';
 
 export interface ResolvedAudioResult {
   streamUrl: string;
@@ -126,8 +127,152 @@ export class MediaSessionWeb extends WebPlugin implements MediaSessionPlugin {
   }
 }
 
+export class VideoPlayerWeb extends WebPlugin implements VideoPlayerPlugin {
+  private overlay: HTMLElement | null = null;
+  private hls: any = null;
+
+  async playVideo(options: {
+    url: string;
+    title?: string;
+    headers?: Record<string, string>;
+    positionMs?: number;
+  }): Promise<void> {
+    this.cleanup();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'ayuuu-web-video-overlay';
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: #000;
+      z-index: 999999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    `;
+
+    const header = document.createElement('div');
+    header.style.cssText = `
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.85), transparent);
+      z-index: 10;
+      color: #fff;
+    `;
+
+    const titleEl = document.createElement('div');
+    titleEl.textContent = options.title || 'Video Player';
+    titleEl.style.cssText = 'font-weight: 600; font-size: 15px; letter-spacing: -0.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80%;';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.innerHTML = '✕';
+    closeBtn.style.cssText = `
+      background: rgba(255,255,255,0.18);
+      border: none;
+      color: #fff;
+      font-size: 18px;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s ease;
+    `;
+    closeBtn.onclick = () => this.cleanup();
+
+    header.appendChild(titleEl);
+    header.appendChild(closeBtn);
+    overlay.appendChild(header);
+
+    const video = document.createElement('video');
+    video.controls = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.style.cssText = 'width: 100%; height: 100%; max-height: 100vh; object-fit: contain; outline: none;';
+
+    overlay.appendChild(video);
+    document.body.appendChild(overlay);
+    this.overlay = overlay;
+
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        this.cleanup();
+        window.removeEventListener('keydown', handleKey);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+
+    const isM3u8 = options.url.includes('.m3u8');
+    if (isM3u8 && Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+      });
+      this.hls = hls;
+      hls.loadSource(options.url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (options.positionMs) {
+          video.currentTime = options.positionMs / 1000;
+        }
+        video.play().catch(e => console.warn('Autoplay prevented:', e));
+      });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          console.error('HLS Fatal Error:', data);
+        }
+      });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = options.url;
+      if (options.positionMs) video.currentTime = options.positionMs / 1000;
+      video.play().catch(e => console.warn('Autoplay prevented:', e));
+    } else {
+      video.src = options.url;
+      if (options.positionMs) video.currentTime = options.positionMs / 1000;
+      video.play().catch(e => console.warn('Autoplay prevented:', e));
+    }
+  }
+
+  async stopVideo(): Promise<void> {
+    this.cleanup();
+  }
+
+  private cleanup(): void {
+    if (this.hls) {
+      try {
+        this.hls.destroy();
+      } catch {}
+      this.hls = null;
+    }
+    if (this.overlay) {
+      try {
+        const video = this.overlay.querySelector('video');
+        if (video) {
+          video.pause();
+          video.src = '';
+        }
+        this.overlay.remove();
+      } catch {}
+      this.overlay = null;
+    }
+  }
+}
+
 export const NewPipeExtractor = registerPlugin<NewPipeExtractorPlugin>('NewPipeExtractor');
 export const MediaSession = registerPlugin<MediaSessionPlugin>('MediaSession', {
   web: () => new MediaSessionWeb(),
 });
-export const VideoPlayer = registerPlugin<VideoPlayerPlugin>('VideoPlayer');
+export const VideoPlayer = registerPlugin<VideoPlayerPlugin>('VideoPlayer', {
+  web: () => new VideoPlayerWeb(),
+});
