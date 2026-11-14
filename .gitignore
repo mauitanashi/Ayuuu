@@ -118,5 +118,11 @@ desktop.ini
 # ---- Agent & Editor tooling ----
 .agents/
 .zed/
+
+# ---- Node & Web ----
+node_modules/
+dist/
+.capacitor/
+
 skills/
 skills-lock.json

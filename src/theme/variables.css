@@ -1,0 +1,39 @@
+/* Ionic Dark Mode Variables adhering to Auris Apple-Music dark aesthetic */
+:root {
+  --ion-color-primary: #f43f5e;
+  --ion-color-primary-rgb: 244, 63, 94;
+  --ion-color-primary-contrast: #ffffff;
+  --ion-color-primary-contrast-rgb: 255, 255, 255;
+  --ion-color-primary-shade: #d73753;
+  --ion-color-primary-tint: #f5526e;
+
+  --ion-background-color: #0b0b0d;
+  --ion-background-color-rgb: 11, 11, 13;
+
+  --ion-text-color: #f4f4f5;
+  --ion-text-color-rgb: 244, 244, 245;
+
+  --ion-color-step-50: #17171a;
+  --ion-color-step-100: #232328;
+  --ion-color-step-150: #2f2f35;
+  --ion-color-step-200: #3b3b42;
+  --ion-color-step-250: #47474f;
+  --ion-color-step-300: #54545d;
+  --ion-color-step-350: #60606a;
+  --ion-color-step-400: #6c6c77;
+  --ion-color-step-450: #787884;
+  --ion-color-step-500: #848491;
+  --ion-color-step-550: #91919e;
+  --ion-color-step-600: #9d9dab;
+  --ion-color-step-650: #a9a9b9;
+  --ion-color-step-700: #b5b5c6;
+  --ion-color-step-750: #c1c1d3;
+  --ion-color-step-800: #cecee0;
+  --ion-color-step-850: #dadbed;
+  --ion-color-step-900: #e6e7fa;
+  --ion-color-step-950: #f2f3ff;
+
+  --ion-toolbar-background: #111114;
+  --ion-tab-bar-background: #0d0d10;
+  --ion-card-background: #18181c;
+}
