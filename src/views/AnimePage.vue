@@ -9,10 +9,11 @@
       </ion-toolbar>
       <ion-toolbar>
         <ion-searchbar
-          v-model="searchQuery"
+          :value="searchQuery"
           placeholder="Search anime by title..."
-          @keyup.enter="handleSearch"
-          :debounce="500"
+          @ionInput="onSearchInput($event)"
+          @keydown.enter="onSearchEnter($event)"
+          @ionClear="onSearchClear"
         ></ion-searchbar>
       </ion-toolbar>
     </ion-header>
@@ -57,21 +58,75 @@
             <ion-spinner name="crescent"></ion-spinner>
           </div>
 
-          <ion-list v-else lines="none" class="episode-list">
-            <ion-item
-              v-for="ep in episodes"
-              :key="ep.id"
-              button
-              @click="playEpisode(ep)"
-              class="episode-item"
-            >
-              <ion-label>
-                <h3>{{ ep.title }}</h3>
-              </ion-label>
-              <ion-spinner v-if="resolvingEpId === ep.id" name="crescent" slot="end" class="ep-spinner"></ion-spinner>
-              <ion-icon v-else :icon="playCircleOutline" slot="end" class="ep-play-icon"></ion-icon>
-            </ion-item>
-          </ion-list>
+          <div v-else>
+            <ion-list lines="none" class="episode-list">
+              <ion-item
+                v-for="ep in paginatedEpisodes"
+                :key="ep.id"
+                button
+                @click="playEpisode(ep)"
+                class="episode-item"
+              >
+                <ion-label>
+                  <h3>{{ ep.title }}</h3>
+                </ion-label>
+                <ion-spinner v-if="resolvingEpId === ep.id" name="crescent" slot="end" class="ep-spinner"></ion-spinner>
+                <ion-icon v-else :icon="playCircleOutline" slot="end" class="ep-play-icon"></ion-icon>
+              </ion-item>
+            </ion-list>
+
+            <div v-if="episodes.length === 0" class="no-episodes-msg ion-padding">
+              <p>No episodes available for this anime.</p>
+            </div>
+
+            <!-- Pagination Bar (10 per page) -->
+            <div class="episode-pagination" v-if="episodes.length > 0">
+              <div class="page-controls">
+                <ion-button
+                  size="small"
+                  fill="outline"
+                  :disabled="episodePage <= 1"
+                  @click="goToEpisodePage(episodePage - 1)"
+                >
+                  Prev
+                </ion-button>
+
+                <span class="page-number-text">
+                  Page {{ episodePage }} / {{ totalEpisodePages }}
+                  <span class="total-count">({{ episodes.length }} eps)</span>
+                </span>
+
+                <ion-button
+                  size="small"
+                  fill="outline"
+                  :disabled="episodePage >= totalEpisodePages"
+                  @click="goToEpisodePage(episodePage + 1)"
+                >
+                  Next
+                </ion-button>
+              </div>
+
+              <!-- Quick jump buttons if more than 2 pages -->
+              <div class="quick-jump-actions" v-if="totalEpisodePages > 2">
+                <ion-button
+                  size="small"
+                  fill="clear"
+                  :disabled="episodePage === 1"
+                  @click="goToEpisodePage(1)"
+                >
+                  « First
+                </ion-button>
+                <ion-button
+                  size="small"
+                  fill="clear"
+                  :disabled="episodePage === totalEpisodePages"
+                  @click="goToEpisodePage(totalEpisodePages)"
+                >
+                  Last »
+                </ion-button>
+              </div>
+            </div>
+          </div>
         </ion-content>
       </ion-modal>
     </ion-content>
@@ -79,7 +134,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import {
   IonPage,
   IonHeader,
@@ -117,6 +172,35 @@ const animeList = ref<AnimeItem[]>([]);
 const episodes = ref<AnimeEpisodeItem[]>([]);
 const selectedAnime = ref<AnimeItem | null>(null);
 
+const episodePage = ref(1);
+const episodePageSize = 10;
+const totalEpisodePages = computed(() => Math.ceil(episodes.value.length / episodePageSize) || 1);
+
+const paginatedEpisodes = computed(() => {
+  const start = (episodePage.value - 1) * episodePageSize;
+  return episodes.value.slice(start, start + episodePageSize);
+});
+
+const goToEpisodePage = (page: number) => {
+  if (page < 1 || page > totalEpisodePages.value) return;
+  episodePage.value = page;
+};
+
+const onSearchInput = (ev: CustomEvent) => {
+  searchQuery.value = (ev.detail?.value as string) || '';
+};
+
+const onSearchEnter = (ev: any) => {
+  const val = ev?.target?.value !== undefined ? ev.target.value : searchQuery.value;
+  searchQuery.value = (val || '').trim();
+  handleSearch();
+};
+
+const onSearchClear = () => {
+  searchQuery.value = '';
+  loadTrending();
+};
+
 const loadTrending = async () => {
   isLoading.value = true;
   isSearching.value = false;
@@ -147,6 +231,7 @@ const handleSearch = async () => {
 
 const selectAnime = async (anime: AnimeItem) => {
   selectedAnime.value = anime;
+  episodePage.value = 1;
   isLoadingEpisodes.value = true;
   episodes.value = [];
   try {
@@ -285,5 +370,47 @@ onMounted(() => {
   width: 22px;
   height: 22px;
   color: #5b86e5;
+}
+
+.episode-pagination {
+  margin-top: 16px;
+  padding-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 320px;
+}
+
+.page-number-text {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #f5f5f7;
+  text-align: center;
+}
+
+.total-count {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: #a1a1a6;
+}
+
+.quick-jump-actions {
+  display: flex;
+  gap: 16px;
+}
+
+.no-episodes-msg {
+  text-align: center;
+  color: #a1a1a6;
+  font-size: 0.9rem;
 }
 </style>
