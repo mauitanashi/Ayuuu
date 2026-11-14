@@ -27,6 +27,7 @@
         <activity
             android:name=".plugins.ExoPlayerActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
+            android:screenOrientation="sensorLandscape"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
 

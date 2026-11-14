@@ -28,8 +28,9 @@ class ExoPlayerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Keep screen on during anime playback
+        // Keep screen on during anime playback and lock to landscape
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 
         val streamUrl = intent.getStringExtra(EXTRA_URL) ?: run {
             finish()

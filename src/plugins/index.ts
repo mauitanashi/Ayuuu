@@ -139,6 +139,12 @@ export class VideoPlayerWeb extends WebPlugin implements VideoPlayerPlugin {
   }): Promise<void> {
     this.cleanup();
 
+    try {
+      if (window.screen?.orientation && 'lock' in window.screen.orientation) {
+        (window.screen.orientation as any).lock('landscape').catch(() => {});
+      }
+    } catch {}
+
     const overlay = document.createElement('div');
     overlay.id = 'ayuuu-web-video-overlay';
     overlay.style.cssText = `
@@ -270,6 +276,12 @@ export class VideoPlayerWeb extends WebPlugin implements VideoPlayerPlugin {
   }
 
   private cleanup(): void {
+    try {
+      if (window.screen?.orientation && 'unlock' in window.screen.orientation) {
+        window.screen.orientation.unlock();
+      }
+    } catch {}
+
     if (this.hls) {
       try {
         this.hls.destroy();
