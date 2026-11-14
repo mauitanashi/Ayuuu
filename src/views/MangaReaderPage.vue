@@ -6,7 +6,7 @@
         <ion-buttons slot="start">
           <ion-back-button default-href="/tabs/manga"></ion-back-button>
         </ion-buttons>
-        <ion-title>Chapter {{ chapterId }}</ion-title>
+        <ion-title>Manga Reader</ion-title>
         <ion-buttons slot="end">
           <ion-button @click="toggleReadingMode">
             <ion-icon :icon="isLongStrip ? documentOutline : albumsOutline" slot="icon-only"></ion-icon>
@@ -17,8 +17,20 @@
 
     <!-- Reader Content -->
     <ion-content :fullscreen="true" class="reader-content" @click="toggleOverlay">
+      <!-- Loading state -->
+      <div v-if="isLoading" class="center-content">
+        <ion-spinner name="crescent" color="primary"></ion-spinner>
+        <p class="loading-text">Resolving chapter pages from MangaDex...</p>
+      </div>
+
+      <!-- Error state -->
+      <div v-else-if="error" class="center-content">
+        <p class="error-text">{{ error }}</p>
+        <ion-button fill="outline" color="primary" @click="loadPages">Retry</ion-button>
+      </div>
+
       <!-- Long-strip mode -->
-      <div v-if="isLongStrip" class="long-strip-container">
+      <div v-else-if="isLongStrip" class="long-strip-container">
         <div
           v-for="(pageUrl, index) in pages"
           :key="index"
@@ -37,7 +49,7 @@
 
       <!-- Paged mode -->
       <div v-else class="paged-container">
-        <div class="paged-slide">
+        <div class="paged-slide" @click.stop="nextPage">
           <img
             :src="pages[currentPage]"
             :alt="'Page ' + (currentPage + 1)"
@@ -51,7 +63,7 @@
     <ion-footer class="reader-footer" :class="{ 'overlay-visible': showOverlay }">
       <ion-toolbar color="dark">
         <ion-buttons slot="start">
-          <ion-button :disabled="Number(chapterId) <= 1" @click.stop="navigateChapter(-1)">
+          <ion-button :disabled="currentPage <= 0" @click.stop="prevPage">
             Prev
           </ion-button>
         </ion-buttons>
@@ -61,7 +73,7 @@
         </div>
 
         <ion-buttons slot="end">
-          <ion-button @click.stop="navigateChapter(1)">
+          <ion-button :disabled="currentPage >= pages.length - 1" @click.stop="nextPage">
             Next
           </ion-button>
         </ion-buttons>
@@ -71,8 +83,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { ref, onMounted } from 'vue';
+import { useRoute } from 'vue-router';
 import {
   IonPage,
   IonHeader,
@@ -84,26 +96,37 @@ import {
   IonContent,
   IonFooter,
   IonIcon,
+  IonSpinner,
 } from '@ionic/vue';
 import { documentOutline, albumsOutline } from 'ionicons/icons';
+import { MangaService } from '../services/mangaService';
 
 const route = useRoute();
-const router = useRouter();
-
-const mangaId = route.params.id as string;
 const chapterId = ref(route.params.chapterId as string);
 
 const showOverlay = ref(true);
 const isLongStrip = ref(true);
 const currentPage = ref(0);
+const isLoading = ref(true);
+const error = ref<string | null>(null);
+const pages = ref<string[]>([]);
 
-// Demo pages matching vertical strip manhwa/manga
-const pages = ref<string[]>([
-  'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80',
-  'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80',
-  'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80',
-  'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80',
-]);
+const loadPages = async () => {
+  if (!chapterId.value) return;
+  isLoading.value = true;
+  error.value = null;
+  try {
+    pages.value = await MangaService.getChapterPages(chapterId.value);
+    if (pages.value.length === 0) {
+      error.value = 'No pages available for this chapter.';
+    }
+  } catch (err: any) {
+    console.error('Failed to resolve chapter pages:', err);
+    error.value = err?.message || 'Failed to load chapter images.';
+  } finally {
+    isLoading.value = false;
+  }
+};
 
 const toggleOverlay = () => {
   showOverlay.value = !showOverlay.value;
@@ -114,16 +137,24 @@ const toggleReadingMode = () => {
 };
 
 const onPageLoaded = (index: number) => {
-  // Page load event
+  // Page load tracking
 };
 
-const navigateChapter = (offset: number) => {
-  const nextCh = Number(chapterId.value) + offset;
-  if (nextCh < 1) return;
-  chapterId.value = String(nextCh);
-  currentPage.value = 0;
-  router.replace(`/manga/${mangaId}/chapter/${nextCh}`);
+const nextPage = () => {
+  if (currentPage.value < pages.value.length - 1) {
+    currentPage.value++;
+  }
 };
+
+const prevPage = () => {
+  if (currentPage.value > 0) {
+    currentPage.value--;
+  }
+};
+
+onMounted(() => {
+  loadPages();
+});
 </script>
 
 <style scoped>
@@ -153,6 +184,27 @@ const navigateChapter = (offset: number) => {
 
 .reader-content {
   --background: #000000;
+}
+
+.center-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 80vh;
+  text-align: center;
+  padding: 24px;
+}
+
+.loading-text {
+  margin-top: 16px;
+  color: #a1a1aa;
+  font-size: 0.95rem;
+}
+
+.error-text {
+  color: #f43f5e;
+  margin-bottom: 16px;
 }
 
 .long-strip-container {
@@ -186,6 +238,7 @@ const navigateChapter = (offset: number) => {
 .paged-slide {
   max-width: 100%;
   max-height: 100%;
+  cursor: pointer;
 }
 
 .paged-img {

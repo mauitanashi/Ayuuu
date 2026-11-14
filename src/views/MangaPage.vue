@@ -4,16 +4,28 @@
       <ion-toolbar>
         <ion-title>Manga</ion-title>
       </ion-toolbar>
+      <ion-toolbar>
+        <ion-searchbar
+          v-model="searchQuery"
+          placeholder="Search MangaDex..."
+          @keyup.enter="handleSearch"
+          :debounce="500"
+        ></ion-searchbar>
+      </ion-toolbar>
     </ion-header>
 
     <ion-content :fullscreen="true">
-      <div class="ion-padding">
-        <h2 class="section-title">Trending Manga</h2>
+      <div v-if="isLoading" class="ion-text-center ion-padding">
+        <ion-spinner name="crescent"></ion-spinner>
+      </div>
+
+      <div v-else class="ion-padding">
+        <h2 class="section-title">{{ isSearching ? 'Search Results' : 'Popular on MangaDex' }}</h2>
         <ion-grid>
           <ion-row>
             <ion-col size="6" size-md="4" v-for="manga in mangaList" :key="manga.id">
-              <ion-card class="manga-card" @click="openManga(manga)">
-                <img :src="manga.coverUrl" class="manga-cover" />
+              <ion-card class="manga-card" button @click="openManga(manga)">
+                <img :src="manga.coverUrl" class="manga-cover" loading="lazy" />
                 <ion-card-header>
                   <ion-card-subtitle>{{ manga.latestChapter }}</ion-card-subtitle>
                   <ion-card-title class="card-title">{{ manga.title }}</ion-card-title>
@@ -35,14 +47,22 @@
           </ion-toolbar>
         </ion-header>
         <ion-content class="ion-padding">
-          <ion-list>
+          <p class="manga-desc">{{ selectedManga?.description }}</p>
+
+          <div v-if="isLoadingChapters" class="ion-text-center ion-padding">
+            <ion-spinner name="crescent"></ion-spinner>
+          </div>
+
+          <ion-list v-else>
             <ion-item
-              v-for="ch in 10"
-              :key="ch"
+              v-for="ch in chapters"
+              :key="ch.id"
               button
               @click="readChapter(ch)"
             >
-              <ion-label>Chapter {{ ch }}</ion-label>
+              <ion-label>
+                <h3>{{ ch.title }}</h3>
+              </ion-label>
               <ion-icon :icon="bookOutline" slot="end"></ion-icon>
             </ion-item>
           </ion-list>
@@ -53,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   IonPage,
@@ -61,6 +81,8 @@ import {
   IonToolbar,
   IonTitle,
   IonContent,
+  IonSearchbar,
+  IonSpinner,
   IonGrid,
   IonRow,
   IonCol,
@@ -77,48 +99,69 @@ import {
   IonIcon,
 } from '@ionic/vue';
 import { bookOutline } from 'ionicons/icons';
-
-interface MangaItem {
-  id: string;
-  title: string;
-  coverUrl: string;
-  latestChapter: string;
-}
+import { MangaService, MangaItem, ChapterItem } from '../services/mangaService';
 
 const router = useRouter();
+
+const mangaList = ref<MangaItem[]>([]);
+const chapters = ref<ChapterItem[]>([]);
 const selectedManga = ref<MangaItem | null>(null);
 
-const mangaList = ref<MangaItem[]>([
-  {
-    id: 'solo-leveling',
-    title: 'Solo Leveling',
-    coverUrl: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=400&q=80',
-    latestChapter: 'Ch. 200',
-  },
-  {
-    id: 'one-piece',
-    title: 'One Piece',
-    coverUrl: 'https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=400&q=80',
-    latestChapter: 'Ch. 1120',
-  },
-  {
-    id: 'spy-family',
-    title: 'Spy x Family',
-    coverUrl: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=400&q=80',
-    latestChapter: 'Ch. 95',
-  },
-]);
+const searchQuery = ref('');
+const isSearching = ref(false);
+const isLoading = ref(true);
+const isLoadingChapters = ref(false);
 
-const openManga = (manga: MangaItem) => {
-  selectedManga.value = manga;
+const loadPopular = async () => {
+  isLoading.value = true;
+  isSearching.value = false;
+  try {
+    mangaList.value = await MangaService.getPopularManga();
+  } catch (err) {
+    console.error('Failed to load MangaDex popular:', err);
+  } finally {
+    isLoading.value = false;
+  }
 };
 
-const readChapter = (chapterNumber: number) => {
+const handleSearch = async () => {
+  if (!searchQuery.value.trim()) {
+    loadPopular();
+    return;
+  }
+  isLoading.value = true;
+  isSearching.value = true;
+  try {
+    mangaList.value = await MangaService.searchManga(searchQuery.value);
+  } catch (err) {
+    console.error('Failed to search MangaDex:', err);
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+const openManga = async (manga: MangaItem) => {
+  selectedManga.value = manga;
+  isLoadingChapters.value = true;
+  try {
+    chapters.value = await MangaService.getChapters(manga.id);
+  } catch (err) {
+    console.error('Failed to fetch chapters:', err);
+  } finally {
+    isLoadingChapters.value = false;
+  }
+};
+
+const readChapter = (ch: ChapterItem) => {
   if (!selectedManga.value) return;
   const mangaId = selectedManga.value.id;
   selectedManga.value = null;
-  router.push(`/manga/${mangaId}/chapter/${chapterNumber}`);
+  router.push(`/manga/${mangaId}/chapter/${ch.id}`);
 };
+
+onMounted(() => {
+  loadPopular();
+});
 </script>
 
 <style scoped>
@@ -140,6 +183,7 @@ const readChapter = (chapterNumber: number) => {
   width: 100%;
   aspect-ratio: 3 / 4;
   object-fit: cover;
+  display: block;
 }
 
 .card-title {
@@ -147,5 +191,14 @@ const readChapter = (chapterNumber: number) => {
   font-weight: 600;
   color: #f4f4f5;
   margin-top: 4px;
+}
+
+.manga-desc {
+  font-size: 0.9rem;
+  color: #a1a1aa;
+  margin-bottom: 16px;
+  line-height: 1.4;
+  max-height: 120px;
+  overflow-y: auto;
 }
 </style>

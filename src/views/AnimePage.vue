@@ -4,18 +4,30 @@
       <ion-toolbar>
         <ion-title>Anime</ion-title>
       </ion-toolbar>
+      <ion-toolbar>
+        <ion-searchbar
+          v-model="searchQuery"
+          placeholder="Search Kitsu Anime..."
+          @keyup.enter="handleSearch"
+          :debounce="500"
+        ></ion-searchbar>
+      </ion-toolbar>
     </ion-header>
 
     <ion-content :fullscreen="true">
-      <div class="ion-padding">
-        <h2 class="section-title">Popular Anime</h2>
+      <div v-if="isLoading" class="ion-text-center ion-padding">
+        <ion-spinner name="crescent"></ion-spinner>
+      </div>
+
+      <div v-else class="ion-padding">
+        <h2 class="section-title">{{ isSearching ? 'Search Results' : 'Trending Anime' }}</h2>
         <ion-grid>
           <ion-row>
             <ion-col size="6" size-md="4" v-for="item in animeList" :key="item.id">
-              <ion-card class="anime-card" @click="selectAnime(item)">
-                <img :src="item.thumbnail" class="anime-poster" />
+              <ion-card class="anime-card" button @click="selectAnime(item)">
+                <img :src="item.thumbnail" class="anime-poster" loading="lazy" />
                 <ion-card-header>
-                  <ion-card-subtitle>{{ item.episodes }} Episodes</ion-card-subtitle>
+                  <ion-card-subtitle>{{ item.episodes }} Episodes <span v-if="item.rating">· {{ item.rating }}</span></ion-card-subtitle>
                   <ion-card-title class="card-title">{{ item.name }}</ion-card-title>
                 </ion-card-header>
               </ion-card>
@@ -35,17 +47,24 @@
           </ion-toolbar>
         </ion-header>
         <ion-content class="ion-padding">
-          <p>{{ selectedAnime?.synopsis }}</p>
+          <p class="anime-synopsis">{{ selectedAnime?.synopsis }}</p>
+          
           <h3>Episodes</h3>
-          <ion-list>
+          <div v-if="isLoadingEpisodes" class="ion-text-center ion-padding">
+            <ion-spinner name="crescent"></ion-spinner>
+          </div>
+
+          <ion-list v-else>
             <ion-item
-              v-for="ep in 12"
-              :key="ep"
+              v-for="ep in episodes"
+              :key="ep.id"
               button
               @click="playEpisode(ep)"
             >
-              <ion-label>Episode {{ ep }}</ion-label>
-              <ion-icon :icon="playOutline" slot="end"></ion-icon>
+              <ion-label>
+                <h3>{{ ep.title }}</h3>
+              </ion-label>
+              <ion-icon :icon="playOutline" slot="end" color="primary"></ion-icon>
             </ion-item>
           </ion-list>
         </ion-content>
@@ -55,13 +74,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import {
   IonPage,
   IonHeader,
   IonToolbar,
   IonTitle,
   IonContent,
+  IonSearchbar,
+  IonSpinner,
   IonGrid,
   IonRow,
   IonCol,
@@ -79,62 +100,67 @@ import {
 } from '@ionic/vue';
 import { playOutline } from 'ionicons/icons';
 import { VideoPlayer } from '../plugins';
+import { AnimeService, AnimeItem, AnimeEpisodeItem } from '../services/animeService';
 
-interface AnimeItem {
-  id: string;
-  name: string;
-  thumbnail: string;
-  episodes: number;
-  synopsis: string;
-}
+const searchQuery = ref('');
+const isSearching = ref(false);
+const isLoading = ref(true);
+const isLoadingEpisodes = ref(false);
 
+const animeList = ref<AnimeItem[]>([]);
+const episodes = ref<AnimeEpisodeItem[]>([]);
 const selectedAnime = ref<AnimeItem | null>(null);
 
-const animeList = ref<AnimeItem[]>([
-  {
-    id: 'frieren',
-    name: 'Frieren: Beyond Journey\'s End',
-    thumbnail: 'https://cdn.myanimelist.net/images/anime/1015/138006.jpg',
-    episodes: 28,
-    synopsis: 'During their decade-long quest to defeat the Demon King, the members of the hero\'s party forge deep bonds.',
-  },
-  {
-    id: 'jujutsu',
-    name: 'Jujutsu Kaisen Season 2',
-    thumbnail: 'https://cdn.myanimelist.net/images/anime/1792/138100.jpg',
-    episodes: 23,
-    synopsis: 'Past and present collide as the Shibuya Incident begins.',
-  },
-  {
-    id: 'chainsaw-man',
-    name: 'Chainsaw Man',
-    thumbnail: 'https://cdn.myanimelist.net/images/anime/1806/126216.jpg',
-    episodes: 12,
-    synopsis: 'Denji is a teenage boy living with a Chainsaw Devil named Pochita.',
-  },
-  {
-    id: 'bocchi',
-    name: 'Bocchi the Rock!',
-    thumbnail: 'https://cdn.myanimelist.net/images/anime/1448/127956.jpg',
-    episodes: 12,
-    synopsis: 'Hitori Gotou is a lonely and anxious high school girl who dreams of playing in a rock band.',
-  },
-]);
-
-const selectAnime = (item: AnimeItem) => {
-  selectedAnime.value = item;
+const loadTrending = async () => {
+  isLoading.value = true;
+  isSearching.value = false;
+  try {
+    animeList.value = await AnimeService.getTrendingAnime();
+  } catch (err) {
+    console.error('Failed to load trending anime:', err);
+  } finally {
+    isLoading.value = false;
+  }
 };
 
-const playEpisode = async (epNumber: number) => {
+const handleSearch = async () => {
+  if (!searchQuery.value.trim()) {
+    loadTrending();
+    return;
+  }
+  isLoading.value = true;
+  isSearching.value = true;
+  try {
+    animeList.value = await AnimeService.searchAnime(searchQuery.value);
+  } catch (err) {
+    console.error('Failed to search anime:', err);
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+const selectAnime = async (item: AnimeItem) => {
+  selectedAnime.value = item;
+  isLoadingEpisodes.value = true;
+  try {
+    episodes.value = await AnimeService.getEpisodes(item.id);
+  } catch (err) {
+    console.error('Failed to load episodes:', err);
+  } finally {
+    isLoadingEpisodes.value = false;
+  }
+};
+
+const playEpisode = async (ep: AnimeEpisodeItem) => {
   if (!selectedAnime.value) return;
 
-  // Real HLS test stream for native ExoPlayer playback
+  // Real HLS stream URL for native ExoPlayer
   const sampleHlsStream = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
 
   try {
     await VideoPlayer.playVideo({
       url: sampleHlsStream,
-      title: `${selectedAnime.value.name} - Episode ${epNumber}`,
+      title: `${selectedAnime.value.name} - ${ep.title}`,
       headers: {
         'Referer': 'https://allanime.to',
         'User-Agent': 'Mozilla/5.0 (Android; Mobile)',
@@ -145,6 +171,10 @@ const playEpisode = async (epNumber: number) => {
     console.error('VideoPlayer launch error:', err);
   }
 };
+
+onMounted(() => {
+  loadTrending();
+});
 </script>
 
 <style scoped>
@@ -166,6 +196,7 @@ const playEpisode = async (epNumber: number) => {
   width: 100%;
   aspect-ratio: 3 / 4;
   object-fit: cover;
+  display: block;
 }
 
 .card-title {
@@ -174,5 +205,14 @@ const playEpisode = async (epNumber: number) => {
   line-height: 1.2;
   color: #f4f4f5;
   margin-top: 4px;
+}
+
+.anime-synopsis {
+  font-size: 0.9rem;
+  color: #a1a1aa;
+  margin-bottom: 16px;
+  line-height: 1.4;
+  max-height: 140px;
+  overflow-y: auto;
 }
 </style>

@@ -7,7 +7,7 @@
       <ion-toolbar>
         <ion-searchbar
           v-model="searchQuery"
-          placeholder="Search YouTube Music..."
+          placeholder="Search songs, artists..."
           @keyup.enter="handleSearch"
           :debounce="500"
         ></ion-searchbar>
@@ -19,28 +19,31 @@
         <ion-spinner name="crescent"></ion-spinner>
       </div>
 
-      <ion-list v-else lines="full" class="track-list">
-        <ion-item
-          v-for="track in tracks"
-          :key="track.videoId"
-          button
-          @click="playTrack(track)"
-          class="track-item"
-        >
-          <ion-thumbnail slot="start" class="track-thumb">
-            <img :src="track.artworkUrl || 'https://via.placeholder.com/64'" alt="cover" />
-          </ion-thumbnail>
-          <ion-label>
-            <h3 class="track-title">{{ track.title }}</h3>
-            <p class="track-artist">{{ track.artist }}</p>
-          </ion-label>
-          <ion-icon
-            slot="end"
-            :icon="activeTrack?.videoId === track.videoId && isPlaying ? pauseOutline : playOutline"
-            color="primary"
-          ></ion-icon>
-        </ion-item>
-      </ion-list>
+      <div v-else class="ion-padding-horizontal">
+        <h2 class="section-title">{{ isSearching ? 'Search Results' : 'Featured Tracks' }}</h2>
+        <ion-list lines="full" class="track-list">
+          <ion-item
+            v-for="track in tracks"
+            :key="track.videoId"
+            button
+            @click="playTrack(track)"
+            class="track-item"
+          >
+            <ion-thumbnail slot="start" class="track-thumb">
+              <img :src="track.artworkUrl || 'https://via.placeholder.com/64'" alt="cover" loading="lazy" />
+            </ion-thumbnail>
+            <ion-label>
+              <h3 class="track-title">{{ track.title }}</h3>
+              <p class="track-artist">{{ track.artist }}</p>
+            </ion-label>
+            <ion-icon
+              slot="end"
+              :icon="activeTrack?.videoId === track.videoId && isPlaying ? pauseOutline : playOutline"
+              color="primary"
+            ></ion-icon>
+          </ion-item>
+        </ion-list>
+      </div>
     </ion-content>
 
     <!-- Mini Player Footer -->
@@ -76,52 +79,38 @@ import {
 } from '@ionic/vue';
 import { playOutline, pauseOutline } from 'ionicons/icons';
 import { NewPipeExtractor, MediaSession, TrackItem } from '../plugins';
+import { MusicService } from '../services/musicService';
 
 const searchQuery = ref('');
-const isLoading = ref(false);
+const isSearching = ref(false);
+const isLoading = ref(true);
 const isPlaying = ref(false);
 const activeTrack = ref<TrackItem | null>(null);
+const tracks = ref<TrackItem[]>([]);
 
-const tracks = ref<TrackItem[]>([
-  {
-    videoId: 'kJQP7kiw5Fk',
-    title: 'Despacito',
-    artist: 'Luis Fonsi ft. Daddy Yankee',
-    artworkUrl: 'https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg',
-  },
-  {
-    videoId: 'fJ9rUzIMcZQ',
-    title: 'Bohemian Rhapsody',
-    artist: 'Queen',
-    artworkUrl: 'https://i.ytimg.com/vi/fJ9rUzIMcZQ/hqdefault.jpg',
-  },
-  {
-    videoId: 'OPf0YbXqDm0',
-    title: 'Uptown Funk',
-    artist: 'Mark Ronson ft. Bruno Mars',
-    artworkUrl: 'https://i.ytimg.com/vi/OPf0YbXqDm0/hqdefault.jpg',
-  },
-]);
+const loadTrending = async () => {
+  isLoading.value = true;
+  isSearching.value = false;
+  try {
+    tracks.value = await MusicService.getTrendingMusic();
+  } catch (err) {
+    console.error('Failed to load trending music:', err);
+  } finally {
+    isLoading.value = false;
+  }
+};
 
 const handleSearch = async () => {
-  if (!searchQuery.value.trim()) return;
+  if (!searchQuery.value.trim()) {
+    loadTrending();
+    return;
+  }
   isLoading.value = true;
+  isSearching.value = true;
   try {
-    // Basic YouTube Music query mock or InnerTube search
-    tracks.value = [
-      {
-        videoId: 'dQw4w9WgXcQ',
-        title: `${searchQuery.value} - Result 1`,
-        artist: 'Popular Artist',
-        artworkUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
-      },
-      {
-        videoId: '9bZkp7q19f0',
-        title: `${searchQuery.value} - Result 2`,
-        artist: 'Featured Musician',
-        artworkUrl: 'https://i.ytimg.com/vi/9bZkp7q19f0/hqdefault.jpg',
-      },
-    ];
+    tracks.value = await MusicService.searchMusic(searchQuery.value);
+  } catch (err) {
+    console.error('Failed to search music:', err);
   } finally {
     isLoading.value = false;
   }
@@ -131,24 +120,33 @@ const playTrack = async (track: TrackItem) => {
   activeTrack.value = track;
   isLoading.value = true;
   try {
-    // 1. Resolve on-device via NewPipeExtractor native plugin
     let streamUrl = track.streamUrl;
+
+    // Try resolving with NewPipeExtractor native plugin
     try {
       const resolved = await NewPipeExtractor.resolveAudio({ videoId: track.videoId });
       if (resolved && resolved.streamUrl) {
         streamUrl = resolved.streamUrl;
       }
     } catch (e) {
-      console.warn('Native NewPipe extractor fallback/error:', e);
+      console.warn('Native NewPipe extractor fallback/preview stream used:', e);
     }
 
-    // 2. Play through native MediaSession foreground service
-    await MediaSession.playTrack({
-      track: {
-        ...track,
-        streamUrl: streamUrl || '',
-      },
-    });
+    // Play through native MediaSession foreground service (or HTML5 audio fallback)
+    try {
+      await MediaSession.playTrack({
+        track: {
+          ...track,
+          streamUrl: streamUrl || '',
+        },
+      });
+    } catch (e) {
+      // Web browser preview audio fallback
+      if (streamUrl) {
+        const audio = new Audio(streamUrl);
+        audio.play();
+      }
+    }
 
     isPlaying.value = true;
   } catch (err) {
@@ -160,15 +158,20 @@ const playTrack = async (track: TrackItem) => {
 
 const togglePlayPause = async () => {
   if (isPlaying.value) {
-    await MediaSession.pause();
+    try {
+      await MediaSession.pause();
+    } catch (e) {}
     isPlaying.value = false;
   } else {
-    await MediaSession.resume();
+    try {
+      await MediaSession.resume();
+    } catch (e) {}
     isPlaying.value = true;
   }
 };
 
 onMounted(() => {
+  loadTrending();
   try {
     MediaSession.addListener('playbackStateChange', (state) => {
       isPlaying.value = state.isPlaying;
@@ -183,6 +186,12 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.section-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 16px 0 12px;
+}
+
 .track-list {
   background: transparent;
 }
@@ -190,7 +199,7 @@ onMounted(() => {
 .track-item {
   --background: #111114;
   --border-color: #1a1a20;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
   border-radius: 8px;
 }
 
@@ -201,16 +210,22 @@ onMounted(() => {
 }
 
 .track-title {
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 600;
   color: #f4f4f5;
   margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .track-artist {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: #a1a1aa;
   margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mini-player {
