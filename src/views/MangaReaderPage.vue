@@ -1,22 +1,32 @@
 <template>
   <ion-page>
     <!-- Overlay Header -->
-    <ion-header class="reader-header" :class="{ 'overlay-visible': showOverlay }">
+    <ion-header
+      class="reader-header"
+      :class="{ 'overlay-visible': showOverlay }"
+    >
       <ion-toolbar color="dark">
         <ion-buttons slot="start">
           <ion-back-button default-href="/tabs/manga"></ion-back-button>
         </ion-buttons>
-        <ion-title>Reader</ion-title>
+        <ion-title class="reader-title">{{ currentChapter?.title || 'Reader' }}</ion-title>
         <ion-buttons slot="end">
           <ion-button @click="toggleReadingMode">
-            <ion-icon :icon="isLongStrip ? documentOutline : albumsOutline" slot="icon-only"></ion-icon>
+            <ion-icon
+              :icon="isLongStrip ? documentOutline : albumsOutline"
+              slot="icon-only"
+            ></ion-icon>
           </ion-button>
         </ion-buttons>
       </ion-toolbar>
     </ion-header>
 
     <!-- Reader Content -->
-    <ion-content :fullscreen="true" class="reader-content" @click="toggleOverlay">
+    <ion-content
+      :fullscreen="true"
+      class="reader-content"
+      @click="toggleOverlay"
+    >
       <!-- Loading state -->
       <div v-if="isLoading" class="center-content">
         <ion-spinner name="crescent" color="primary"></ion-spinner>
@@ -42,7 +52,21 @@
             :alt="'Page ' + (index + 1)"
             class="manga-page-img"
             loading="lazy"
+            @error="onPageError(index, $event)"
           />
+        </div>
+
+        <!-- End of chapter actions -->
+        <div class="chapter-end-section ion-padding" v-if="pages.length > 0">
+          <p class="end-msg">End of chapter</p>
+          <ion-button
+            v-if="nextChapter"
+            expand="block"
+            color="primary"
+            @click.stop="goToChapter(nextChapter)"
+          >
+            Next: {{ nextChapter.title }}
+          </ion-button>
         </div>
       </div>
 
@@ -50,30 +74,41 @@
       <div v-else class="paged-container">
         <div class="paged-slide" @click.stop="nextPage">
           <img
+            v-if="pages[currentPage]"
             :src="pages[currentPage]"
             :alt="'Page ' + (currentPage + 1)"
             class="manga-page-img paged-img"
+            @error="onPageError(currentPage, $event)"
           />
         </div>
       </div>
     </ion-content>
 
     <!-- Overlay Footer Toolbar -->
-    <ion-footer class="reader-footer" :class="{ 'overlay-visible': showOverlay }">
+    <ion-footer
+      class="reader-footer"
+      :class="{ 'overlay-visible': showOverlay }"
+    >
       <ion-toolbar color="dark">
         <ion-buttons slot="start">
-          <ion-button :disabled="currentPage <= 0" @click.stop="prevPage">
-            Prev
+          <ion-button
+            :disabled="currentPage <= 0 && !prevChapter"
+            @click.stop="prevPage"
+          >
+            {{ currentPage > 0 ? 'Prev' : (prevChapter ? 'Prev Ch.' : 'Prev') }}
           </ion-button>
         </ion-buttons>
 
         <div class="page-indicator">
-          {{ isLongStrip ? `Total Pages: ${pages.length}` : `Page ${currentPage + 1} / ${pages.length}` }}
+          {{ pages.length > 0 ? `Page ${currentPage + 1} / ${pages.length}` : '' }}
         </div>
 
         <ion-buttons slot="end">
-          <ion-button :disabled="currentPage >= pages.length - 1" @click.stop="nextPage">
-            Next
+          <ion-button
+            :disabled="currentPage >= pages.length - 1 && !nextChapter"
+            @click.stop="nextPage"
+          >
+            {{ currentPage < pages.length - 1 ? 'Next' : (nextChapter ? 'Next Ch.' : 'Next') }}
           </ion-button>
         </ion-buttons>
       </ion-toolbar>
@@ -82,8 +117,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { useRoute } from 'vue-router';
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import {
   IonPage,
   IonHeader,
@@ -98,10 +133,13 @@ import {
   IonSpinner,
 } from '@ionic/vue';
 import { documentOutline, albumsOutline } from 'ionicons/icons';
-import { MangaService } from '../services/mangaService';
+import { MangaService, ChapterItem } from '../services/mangaService';
 
 const route = useRoute();
-const chapterId = ref(decodeURIComponent(route.params.chapterId as string));
+const router = useRouter();
+
+const mangaId = computed(() => (route.params.id as string) || '');
+const chapterId = ref(decodeURIComponent((route.params.chapterId as string) || ''));
 
 const showOverlay = ref(true);
 const isLongStrip = ref(true);
@@ -109,6 +147,55 @@ const currentPage = ref(0);
 const isLoading = ref(true);
 const error = ref<string | null>(null);
 const pages = ref<string[]>([]);
+const chapterList = ref<ChapterItem[]>([]);
+
+let observer: IntersectionObserver | null = null;
+
+const currentChapterIndex = computed(() => {
+  return chapterList.value.findIndex((c) => c.id === chapterId.value);
+});
+
+const currentChapter = computed(() => {
+  return chapterList.value[currentChapterIndex.value] || null;
+});
+
+const nextChapter = computed(() => {
+  if (currentChapterIndex.value >= 0 && currentChapterIndex.value < chapterList.value.length - 1) {
+    return chapterList.value[currentChapterIndex.value + 1];
+  }
+  return null;
+});
+
+const prevChapter = computed(() => {
+  if (currentChapterIndex.value > 0) {
+    return chapterList.value[currentChapterIndex.value - 1];
+  }
+  return null;
+});
+
+const setupObserver = () => {
+  if (observer) {
+    observer.disconnect();
+  }
+
+  observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          const pageNum = Number(entry.target.getAttribute('data-page'));
+          if (!isNaN(pageNum) && pageNum > 0) {
+            currentPage.value = pageNum - 1;
+          }
+        }
+      }
+    },
+    { threshold: 0.3 }
+  );
+
+  document.querySelectorAll('.page-wrapper').forEach((el) => {
+    observer?.observe(el);
+  });
+};
 
 const loadPages = async () => {
   if (!chapterId.value) return;
@@ -118,6 +205,9 @@ const loadPages = async () => {
     pages.value = await MangaService.getChapterPages(chapterId.value);
     if (pages.value.length === 0) {
       error.value = 'No pages available for this chapter.';
+    } else {
+      await nextTick();
+      setupObserver();
     }
   } catch (err: any) {
     console.error('Failed to load chapter pages:', err);
@@ -127,28 +217,80 @@ const loadPages = async () => {
   }
 };
 
+const loadChapterList = async () => {
+  if (!mangaId.value) return;
+  try {
+    chapterList.value = await MangaService.getChapters(mangaId.value);
+  } catch (err) {
+    console.warn('Could not load chapter list for navigation:', err);
+  }
+};
+
 const toggleOverlay = () => {
   showOverlay.value = !showOverlay.value;
 };
 
 const toggleReadingMode = () => {
   isLongStrip.value = !isLongStrip.value;
+  if (isLongStrip.value) {
+    nextTick(() => {
+      scrollToPage(currentPage.value);
+      setupObserver();
+    });
+  }
+};
+
+const scrollToPage = (idx: number) => {
+  const el = document.querySelector(`[data-page="${idx + 1}"]`);
+  el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
+
+const goToChapter = (ch: ChapterItem) => {
+  chapterId.value = ch.id;
+  currentPage.value = 0;
+  router.replace(`/manga/${mangaId.value}/chapter/${encodeURIComponent(ch.id)}`);
+  loadPages();
 };
 
 const nextPage = () => {
   if (currentPage.value < pages.value.length - 1) {
     currentPage.value++;
+    if (isLongStrip.value) {
+      scrollToPage(currentPage.value);
+    }
+  } else if (nextChapter.value) {
+    goToChapter(nextChapter.value);
   }
 };
 
 const prevPage = () => {
   if (currentPage.value > 0) {
     currentPage.value--;
+    if (isLongStrip.value) {
+      scrollToPage(currentPage.value);
+    }
+  } else if (prevChapter.value) {
+    goToChapter(prevChapter.value);
+  }
+};
+
+const onPageError = (index: number, event: Event) => {
+  const img = event.target as HTMLImageElement;
+  if (!img) return;
+  if (!img.src.includes('/proxy-img') && img.src.includes('readdetectiveconan.com')) {
+    img.src = `/proxy-img?url=${encodeURIComponent(img.src)}`;
   }
 };
 
 onMounted(() => {
   loadPages();
+  loadChapterList();
+});
+
+onUnmounted(() => {
+  if (observer) {
+    observer.disconnect();
+  }
 });
 </script>
 
@@ -175,6 +317,11 @@ onMounted(() => {
 
 .overlay-visible {
   transform: translateY(0);
+}
+
+.reader-title {
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .reader-content {
@@ -208,6 +355,7 @@ onMounted(() => {
   align-items: center;
   background-color: #000000;
   min-height: 100%;
+  width: 100%;
 }
 
 .page-wrapper {
@@ -215,12 +363,18 @@ onMounted(() => {
   max-width: 900px;
   display: flex;
   justify-content: center;
+  align-items: center;
+  min-height: 250px;
+  background-color: #0d0d10;
+  margin-bottom: 4px;
 }
 
 .manga-page-img {
   width: 100%;
   height: auto;
+  min-height: 200px;
   display: block;
+  object-fit: contain;
 }
 
 .paged-container {
@@ -246,5 +400,18 @@ onMounted(() => {
   text-align: center;
   font-size: 0.85rem;
   color: #a1a1aa;
+}
+
+.chapter-end-section {
+  width: 100%;
+  max-width: 600px;
+  margin: 32px auto 64px auto;
+  text-align: center;
+}
+
+.end-msg {
+  color: #a1a1aa;
+  margin-bottom: 16px;
+  font-size: 0.95rem;
 }
 </style>

@@ -98,9 +98,10 @@ export const MangaService = {
     return this.parseList(data.data || []);
   },
 
-  async searchManga(query: string, limit = 20): Promise<MangaItem[]> {
+  async searchManga(query: string, limit = 20, offset = 0): Promise<MangaItem[]> {
     const params: QueryParam[] = [
       ['limit', String(limit)],
+      ['offset', String(offset)],
       ['title', query.trim()],
       ['includes[]', 'cover_art'],
       ['includes[]', 'author'],
@@ -116,7 +117,7 @@ export const MangaService = {
   },
 
   async getChapters(mangaId: string, mangaTitle?: string, limit = 100): Promise<ChapterItem[]> {
-    // 1. Try standard hosted chapters
+    // 1. Try primary hosted chapters
     const params: QueryParam[] = [
       ['translatedLanguage[]', 'en'],
       ['includeExternalUrl', '0'],
@@ -144,10 +145,19 @@ export const MangaService = {
 
     // 2. If fewer than 2 chapters found (e.g. One Piece, Jujutsu Kaisen with publisher external redirects),
     // automatically fallback to full chapter resolver
-    if (chapters.length < 2 && mangaTitle) {
-      const altChapters = await this.getAltChapters(mangaTitle);
-      if (altChapters.length > 0) {
-        return altChapters;
+    if (chapters.length < 2) {
+      let titleToUse = mangaTitle;
+      if (!titleToUse) {
+        try {
+          const detail = await fetchJson(`/manga/${mangaId}`);
+          titleToUse = detail.data?.attributes?.title?.en || Object.values(detail.data?.attributes?.title || {})[0];
+        } catch (_) {}
+      }
+      if (titleToUse) {
+        const altChapters = await this.getAltChapters(titleToUse);
+        if (altChapters.length > 0) {
+          return altChapters;
+        }
       }
     }
 
@@ -187,13 +197,16 @@ export const MangaService = {
     if (chapterId.startsWith('alt:')) {
       const path = chapterId.substring(4);
       const html = await fetchAltHtml(path);
-      const pages = html
+      const rawPages = html
         .split('data-src="')
         .slice(1)
         .map((s) => s.split('"')[0])
         .filter((u) => u.startsWith('http'));
 
-      return pages;
+      // If in web/browser, route through Vite proxy to attach Referer header so images aren't 403 thumbnails
+      return rawPages.map((url) => {
+        return !isNative ? `/proxy-img?url=${encodeURIComponent(url)}` : url;
+      });
     }
 
     const data = await fetchJson(`/at-home/server/${chapterId}`);

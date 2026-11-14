@@ -6,10 +6,11 @@
       </ion-toolbar>
       <ion-toolbar>
         <ion-searchbar
-          v-model="searchQuery"
+          :value="searchQuery"
           placeholder="Search manga by title..."
-          @keyup.enter="handleSearch"
-          :debounce="500"
+          @ionInput="onSearchInput($event)"
+          @keydown.enter="onSearchEnter($event)"
+          @ionClear="onSearchClear"
         ></ion-searchbar>
       </ion-toolbar>
     </ion-header>
@@ -45,6 +46,14 @@
             </ion-col>
           </ion-row>
         </ion-grid>
+
+        <!-- Next Page / Infinite Scroll -->
+        <ion-infinite-scroll :disabled="!hasMore" @ionInfinite="loadNextPage($event)">
+          <ion-infinite-scroll-content
+            loading-spinner="crescent"
+            loading-text="Loading more manga..."
+          ></ion-infinite-scroll-content>
+        </ion-infinite-scroll>
       </div>
 
       <!-- Chapter Selection Modal -->
@@ -113,6 +122,8 @@ import {
   IonItem,
   IonLabel,
   IonIcon,
+  IonInfiniteScroll,
+  IonInfiniteScrollContent,
 } from '@ionic/vue';
 import { bookOutline } from 'ionicons/icons';
 import { MangaService, MangaItem, ChapterItem } from '../services/mangaService';
@@ -129,6 +140,9 @@ const isLoading = ref(true);
 const isLoadingChapters = ref(false);
 const error = ref<string | null>(null);
 
+const offset = ref(0);
+const hasMore = ref(true);
+
 const fallbackCover = 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=400&q=80';
 
 const onCoverError = (event: Event) => {
@@ -138,12 +152,32 @@ const onCoverError = (event: Event) => {
   }
 };
 
+const onSearchInput = (ev: CustomEvent) => {
+  searchQuery.value = (ev.detail?.value as string) || '';
+};
+
+const onSearchEnter = (ev: any) => {
+  const val = ev?.target?.value !== undefined ? ev.target.value : searchQuery.value;
+  searchQuery.value = (val || '').trim();
+  handleSearch();
+};
+
+const onSearchClear = () => {
+  searchQuery.value = '';
+  loadPopular();
+};
+
 const loadPopular = async () => {
   isLoading.value = true;
   isSearching.value = false;
   error.value = null;
+  offset.value = 0;
+  hasMore.value = true;
   try {
-    mangaList.value = await MangaService.getPopularManga();
+    mangaList.value = await MangaService.getPopularManga(24, 0);
+    if (mangaList.value.length < 24) {
+      hasMore.value = false;
+    }
   } catch (err: any) {
     console.error('Failed to load manga:', err);
     error.value = 'Failed to load catalog. Please check your connection.';
@@ -153,20 +187,49 @@ const loadPopular = async () => {
 };
 
 const handleSearch = async () => {
-  if (!searchQuery.value.trim()) {
+  const query = searchQuery.value.trim();
+  if (!query) {
     loadPopular();
     return;
   }
   isLoading.value = true;
   isSearching.value = true;
   error.value = null;
+  offset.value = 0;
+  hasMore.value = true;
   try {
-    mangaList.value = await MangaService.searchManga(searchQuery.value);
+    mangaList.value = await MangaService.searchManga(query, 24, 0);
+    if (mangaList.value.length < 24) {
+      hasMore.value = false;
+    }
   } catch (err: any) {
     console.error('Failed to search manga:', err);
     error.value = 'Search failed. Please try again.';
   } finally {
     isLoading.value = false;
+  }
+};
+
+const loadNextPage = async (ev: any) => {
+  try {
+    const nextOffset = offset.value + 24;
+    const more = isSearching.value
+      ? await MangaService.searchManga(searchQuery.value, 24, nextOffset)
+      : await MangaService.getPopularManga(24, nextOffset);
+
+    if (more.length === 0) {
+      hasMore.value = false;
+    } else {
+      offset.value = nextOffset;
+      mangaList.value.push(...more);
+      if (more.length < 24) {
+        hasMore.value = false;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load next page:', err);
+  } finally {
+    ev.target?.complete();
   }
 };
 
