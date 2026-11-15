@@ -89,8 +89,8 @@ class NewPipeExtractorPlugin : Plugin() {
                 val bestAudio = audioStreams.maxByOrNull { it.averageBitrate } ?: audioStreams.first()
 
                 val ret = JSObject().apply {
-                    put("streamUrl", bestAudio.content)
-                    put("format", bestAudio.format.name)
+                    put("streamUrl", bestAudio.url ?: "")
+                    put("format", bestAudio.format?.name ?: "M4A")
                     put("bitrate", bestAudio.averageBitrate)
                     put("durationSeconds", streamInfo.duration)
                     put("title", streamInfo.name)
