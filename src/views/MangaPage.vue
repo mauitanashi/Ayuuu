@@ -65,6 +65,12 @@
           <ion-toolbar>
             <ion-title>{{ selectedManga?.title }}</ion-title>
             <ion-buttons slot="end">
+              <ion-button @click="toggleMangaBookmark">
+                <ion-icon
+                  :icon="isMangaBookmarked ? bookmark : bookmarkOutline"
+                  :color="isMangaBookmarked ? 'primary' : 'light'"
+                ></ion-icon>
+              </ion-button>
               <ion-button @click="closeModal">Close</ion-button>
             </ion-buttons>
           </ion-toolbar>
@@ -203,8 +209,9 @@ import {
   IonInfiniteScrollContent,
   onIonViewDidEnter,
 } from '@ionic/vue';
-import { bookOutline, swapVerticalOutline } from 'ionicons/icons';
+import { bookOutline, swapVerticalOutline, bookmark, bookmarkOutline } from 'ionicons/icons';
 import { MangaService, MangaItem, ChapterItem } from '../services/mangaService';
+import { LibraryService, libraryEntries } from '../services/libraryService';
 
 const router = useRouter();
 const route = useRoute();
@@ -342,9 +349,60 @@ const closeModal = () => {
   }
 };
 
+const isMangaBookmarked = computed(() => {
+  if (!selectedManga.value) return false;
+  return libraryEntries.value.some(
+    (e) => e.media_type === 'MANGA' && e.source_key === selectedManga.value?.id
+  );
+});
+
+const toggleMangaBookmark = async () => {
+  if (!selectedManga.value) return;
+  const manga = selectedManga.value;
+  const existing = libraryEntries.value.find(
+    (e) => e.media_type === 'MANGA' && e.source_key === manga.id
+  );
+  if (existing) {
+    await LibraryService.deleteEntry(existing.id);
+  } else {
+    await LibraryService.upsertEntry({
+      title: manga.title,
+      media_type: 'MANGA',
+      source_id: 'mangadex',
+      source_key: manga.id,
+      artwork_url: manga.coverUrl,
+      description: manga.description,
+      status: 'IN_PROGRESS',
+      progress: 0,
+      total_units: chapters.value.length || 1,
+      current_unit_index: 1,
+      current_unit_title: 'Chapter 1',
+      is_favorite: true,
+      score: 10,
+    });
+  }
+};
+
 const readChapter = (ch: ChapterItem) => {
   if (!selectedManga.value) return;
   const mangaId = selectedManga.value.id;
+
+  // Track in Library & Supabase
+  LibraryService.upsertEntry({
+    title: selectedManga.value.title,
+    media_type: 'MANGA',
+    source_id: 'mangadex',
+    source_key: mangaId,
+    artwork_url: selectedManga.value.coverUrl,
+    description: selectedManga.value.description,
+    status: 'IN_PROGRESS',
+    progress: chapters.value.length ? 1 / chapters.value.length : 0,
+    total_units: chapters.value.length || 1,
+    current_unit_index: 1,
+    current_unit_title: ch.title,
+    last_activity_at: new Date().toISOString(),
+  });
+
   selectedManga.value = null;
   router.push(`/manga/${mangaId}/chapter/${encodeURIComponent(ch.id)}`);
 };

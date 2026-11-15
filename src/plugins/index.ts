@@ -70,6 +70,8 @@ export class MediaSessionWeb extends WebPlugin implements MediaSessionPlugin {
       this.audio.addEventListener('pause', () => this.emitState(false));
       this.audio.addEventListener('ended', () => this.emitState(false));
       this.audio.addEventListener('timeupdate', () => this.emitState(!this.audio?.paused));
+      this.audio.addEventListener('loadedmetadata', () => this.emitState(!this.audio?.paused));
+      this.audio.addEventListener('durationchange', () => this.emitState(!this.audio?.paused));
     }
     return this.audio;
   }
@@ -118,10 +120,14 @@ export class MediaSessionWeb extends WebPlugin implements MediaSessionPlugin {
   async setQueue(): Promise<void> {}
 
   private emitState(isPlaying: boolean) {
+    const audioDurationMs = this.audio?.duration && isFinite(this.audio.duration) && !isNaN(this.audio.duration)
+      ? Math.round(this.audio.duration * 1000)
+      : (this.currentTrack?.durationMs || 180000);
+
     this.notifyListeners('playbackStateChange', {
       isPlaying,
       positionMs: Math.round((this.audio?.currentTime || 0) * 1000),
-      durationMs: Math.round((this.audio?.duration || 0) * 1000) || this.currentTrack?.durationMs || 30000,
+      durationMs: audioDurationMs,
       currentTrack: this.currentTrack,
     });
   }

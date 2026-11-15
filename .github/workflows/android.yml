@@ -2,10 +2,10 @@ name: Android CI (Ionic Capacitor)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
     tags: [ 'v*' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 concurrency:
@@ -47,6 +47,9 @@ jobs:
 
       - name: Build Web Application
         run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://qqjoxfnlldujvnovtptx.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY || 'sb_publishable_uJ2cMitLfDDTMgVMaYDoXQ_qU2fe-m-' }}
 
       - name: Sync Capacitor Android
         run: npx cap sync android

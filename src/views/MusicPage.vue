@@ -10,7 +10,7 @@
       <ion-toolbar>
         <ion-searchbar
           v-model="searchQuery"
-          placeholder="Search songs, artists..."
+          placeholder="Search songs, artists (e.g. BINI, Maki, Dilaw)..."
           @keyup.enter="handleSearch"
           :debounce="500"
         ></ion-searchbar>
@@ -24,7 +24,7 @@
 
       <div v-else class="ion-padding-horizontal">
         <h2 class="section-title">
-          {{ isSearching ? "Search Results" : "Featured Tracks" }}
+          {{ isSearching ? "Search Results" : "Top Hits in the Philippines" }}
         </h2>
         <ion-list lines="none" class="track-list">
           <ion-item
@@ -45,6 +45,17 @@
               <h3 class="track-title">{{ track.title }}</h3>
               <p class="track-artist">{{ track.artist }}</p>
             </ion-label>
+            <ion-button
+              fill="clear"
+              slot="end"
+              class="track-bookmark-btn"
+              @click.stop="toggleBookmark(track)"
+            >
+              <ion-icon
+                :icon="isBookmarked(track) ? bookmark : bookmarkOutline"
+                :color="isBookmarked(track) ? 'primary' : 'medium'"
+              ></ion-icon>
+            </ion-button>
             <ion-button
               fill="clear"
               slot="end"
@@ -86,9 +97,10 @@ import {
   IonButton,
   IonButtons,
 } from "@ionic/vue";
-import { playOutline, pauseOutline } from "ionicons/icons";
+import { playOutline, pauseOutline, bookmark, bookmarkOutline } from "ionicons/icons";
 import { TrackItem } from "../plugins";
 import { MusicService } from "../services/musicService";
+import { LibraryService, libraryEntries } from "../services/libraryService";
 import {
   activeTrack,
   isPlaying,
@@ -126,6 +138,39 @@ const handleSearch = async () => {
     console.error("Music search failed:", e);
   } finally {
     isLoading.value = false;
+  }
+};
+
+const isBookmarked = (track: TrackItem) => {
+  return libraryEntries.value.some(
+    (e) => e.media_type === "MUSIC" && e.source_key === track.videoId
+  );
+};
+
+const toggleBookmark = async (track: TrackItem) => {
+  const existing = libraryEntries.value.find(
+    (e) => e.media_type === "MUSIC" && e.source_key === track.videoId
+  );
+  if (existing) {
+    await LibraryService.deleteEntry(existing.id);
+  } else {
+    await LibraryService.upsertEntry({
+      title: track.title,
+      media_type: "MUSIC",
+      source_id: "itunes",
+      source_key: track.videoId,
+      artwork_url: track.artworkUrl,
+      subtitle: track.artist,
+      author: track.artist,
+      status: "IN_PROGRESS",
+      progress: 0,
+      total_units: 1,
+      current_unit_index: 1,
+      current_unit_title: track.title,
+      is_favorite: true,
+      score: 10,
+      last_position_ms: track.durationMs || 180000,
+    });
   }
 };
 

@@ -123,6 +123,9 @@ desktop.ini
 node_modules/
 dist/
 .capacitor/
+.env
+.env.*
+!.env.example
 
 skills/
 skills-lock.json

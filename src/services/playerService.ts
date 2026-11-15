@@ -6,7 +6,7 @@ export const trackList = ref<TrackItem[]>([]);
 export const isPlaying = ref(false);
 export const isFullPlayerOpen = ref(false);
 export const currentPositionMs = ref(0);
-export const totalDurationMs = ref(30000);
+export const totalDurationMs = ref(180000);
 export const volume = ref(0.75);
 
 export const isEqActive = ref(false);
@@ -64,7 +64,7 @@ export const playTrack = async (track: TrackItem, queue?: TrackItem[]) => {
   }
   isPlaying.value = true;
   currentPositionMs.value = 0;
-  totalDurationMs.value = track.durationMs || 30000;
+  totalDurationMs.value = track.durationMs || 180000;
   startTicker();
 
   try {

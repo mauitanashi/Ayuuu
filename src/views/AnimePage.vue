@@ -46,6 +46,12 @@
           <ion-toolbar class="modal-toolbar">
             <ion-title>{{ selectedAnime?.name }}</ion-title>
             <ion-buttons slot="end">
+              <ion-button @click="toggleAnimeBookmark">
+                <ion-icon
+                  :icon="isAnimeBookmarked ? bookmark : bookmarkOutline"
+                  :color="isAnimeBookmarked ? 'primary' : 'light'"
+                ></ion-icon>
+              </ion-button>
               <ion-button @click="selectedAnime = null">Close</ion-button>
             </ion-buttons>
           </ion-toolbar>
@@ -158,9 +164,10 @@ import {
   IonIcon,
   IonSpinner,
 } from '@ionic/vue';
-import { playCircleOutline } from 'ionicons/icons';
+import { playCircleOutline, bookmark, bookmarkOutline } from 'ionicons/icons';
 import { VideoPlayer } from '../plugins';
 import { AnimeService, AnimeItem, AnimeEpisodeItem } from '../services/animeService';
+import { LibraryService, libraryEntries } from '../services/libraryService';
 
 const searchQuery = ref('');
 const isSearching = ref(false);
@@ -243,6 +250,40 @@ const selectAnime = async (anime: AnimeItem) => {
   }
 };
 
+const isAnimeBookmarked = computed(() => {
+  if (!selectedAnime.value) return false;
+  return libraryEntries.value.some(
+    (e) => e.media_type === 'ANIME' && e.source_key === selectedAnime.value?.id
+  );
+});
+
+const toggleAnimeBookmark = async () => {
+  if (!selectedAnime.value) return;
+  const anime = selectedAnime.value;
+  const existing = libraryEntries.value.find(
+    (e) => e.media_type === 'ANIME' && e.source_key === anime.id
+  );
+  if (existing) {
+    await LibraryService.deleteEntry(existing.id);
+  } else {
+    await LibraryService.upsertEntry({
+      title: anime.name,
+      media_type: 'ANIME',
+      source_id: 'hianime',
+      source_key: anime.id,
+      artwork_url: anime.thumbnail,
+      description: anime.synopsis,
+      status: 'IN_PROGRESS',
+      progress: 0,
+      total_units: episodes.value.length || 12,
+      current_unit_index: 1,
+      current_unit_title: 'Episode 1',
+      is_favorite: true,
+      score: 10,
+    });
+  }
+};
+
 const playEpisode = async (ep: AnimeEpisodeItem) => {
   if (!selectedAnime.value || resolvingEpId.value) return;
 
@@ -255,6 +296,23 @@ const playEpisode = async (ep: AnimeEpisodeItem) => {
     );
 
     const playUrl = stream.embedUrl || stream.streamUrl;
+
+    // Track in Library and Supabase
+    LibraryService.upsertEntry({
+      title: selectedAnime.value.name,
+      media_type: 'ANIME',
+      source_id: 'hianime',
+      source_key: selectedAnime.value.id,
+      artwork_url: selectedAnime.value.thumbnail,
+      description: selectedAnime.value.synopsis,
+      status: 'IN_PROGRESS',
+      progress: ep.number ? ep.number / Math.max(1, episodes.value.length || ep.number) : 0,
+      total_units: episodes.value.length || 12,
+      current_unit_index: ep.number || 1,
+      current_unit_title: ep.title,
+      remote_media_id: playUrl,
+      last_activity_at: new Date().toISOString(),
+    });
 
     await VideoPlayer.playVideo({
       url: playUrl,
